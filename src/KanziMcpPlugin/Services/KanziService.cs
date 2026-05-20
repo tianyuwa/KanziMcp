@@ -24,6 +24,7 @@ using System.IO;
 using System.Linq;
 using System.Reflection;
 using System.Text.Json;
+using System.Text.RegularExpressions;
 using Rightware.Kanzi.Studio.PluginInterface;
 
 namespace KanziMcpPlugin.Services
@@ -4094,21 +4095,49 @@ namespace KanziMcpPlugin.Services
                 if (project == null)
                     return ErrorJson("没有打开的项目");
 
+                // 解析参数
+                string? namingPattern = null;
+                bool checkDepth = false;
+                bool checkNaming = false;
+                int maxDepthWarning = 5;
+
+                if (args.HasValue)
+                {
+                    if (args.Value.TryGetProperty("namingPattern", out var np) && np.ValueKind == JsonValueKind.String)
+                        namingPattern = np.GetString();
+                    if (args.Value.TryGetProperty("checkDepth", out var cd))
+                        checkDepth = cd.GetBoolean();
+                    if (args.Value.TryGetProperty("checkNaming", out var cn))
+                        checkNaming = cn.GetBoolean();
+                    if (args.Value.TryGetProperty("maxDepth", out var md) && md.ValueKind == JsonValueKind.Number)
+                        maxDepthWarning = md.GetInt32();
+                }
+
+                Regex? namingRegex = null;
+                if (checkNaming && !string.IsNullOrEmpty(namingPattern))
+                {
+                    try { namingRegex = new Regex(namingPattern); }
+                    catch (Exception ex) { Log($"AuditProjectStructure: invalid namingPattern regex: {ex.Message}"); }
+                }
+
                 var issues = new List<Dictionary<string, object?>>();
                 int totalNodes = 0, maxDepth = 0;
 
-                AuditStructureRecursive(project, "", 0, issues, ref totalNodes, ref maxDepth);
+                AuditStructureRecursive(project, "", 0, issues, ref totalNodes, ref maxDepth,
+                    checkDepth, maxDepthWarning, checkNaming, namingRegex);
 
                 var score = 100;
-                if (maxDepth > 5) score -= 10;
-                if (issues.Count > 0) score -= issues.Count * 5;
+                if (checkDepth && maxDepth > maxDepthWarning) score -= 10;
+                if (issues.Count > 0) score -= issues.Count * 3;
                 score = Math.Max(score, 0);
 
                 var recommendations = new List<string>();
-                if (maxDepth > 5)
-                    recommendations.Add($"节点嵌套深度为 {maxDepth}，建议控制在 5 层以内");
-                if (issues.Any(i => i["type"]?.ToString() == "naming"))
+                if (checkDepth && maxDepth > maxDepthWarning)
+                    recommendations.Add($"节点嵌套深度为 {maxDepth}，建议控制在 {maxDepthWarning} 层以内");
+                if (checkNaming && issues.Any(i => i["type"]?.ToString() == "naming"))
                     recommendations.Add("统一节点命名规范，使用描述性名称");
+                if (!checkDepth && !checkNaming)
+                    recommendations.Add("未启用任何检查项，请设置 checkDepth=true 或 checkNaming=true");
 
                 return SafeSerialize(new
                 {
@@ -4127,7 +4156,8 @@ namespace KanziMcpPlugin.Services
         }
 
         private void AuditStructureRecursive(object parent, string parentPath, int depth,
-            List<Dictionary<string, object?>> issues, ref int totalNodes, ref int maxDepth)
+            List<Dictionary<string, object?>> issues, ref int totalNodes, ref int maxDepth,
+            bool checkDepth, int maxDepthWarning, bool checkNaming, Regex? namingRegex)
         {
             if (depth > 25) return;
 
@@ -4140,28 +4170,30 @@ namespace KanziMcpPlugin.Services
                     var path = string.IsNullOrEmpty(parentPath) ? name : $"{parentPath}/{name}";
                     maxDepth = Math.Max(maxDepth, depth + 1);
 
-                    if (depth + 1 > 5)
+                    if (checkDepth && depth + 1 > maxDepthWarning)
                     {
                         issues.Add(new Dictionary<string, object?>
                         {
                             ["type"] = "deep_nesting",
                             ["path"] = path,
                             ["depth"] = depth + 1,
-                            ["message"] = $"嵌套深度 {depth + 1} 超过建议值 5"
+                            ["message"] = $"嵌套深度 {depth + 1} 超过建议值 {maxDepthWarning}"
                         });
                     }
 
-                    if (name.Any(c => char.IsDigit(c)) && name.Length <= 3)
+                    if (checkNaming && namingRegex != null && !namingRegex.IsMatch(name))
                     {
                         issues.Add(new Dictionary<string, object?>
                         {
                             ["type"] = "naming",
                             ["path"] = path,
-                            ["message"] = "节点名称过短或含数字，建议使用描述性名称"
+                            ["name"] = name,
+                            ["message"] = $"节点名称 \"{name}\" 不符合命名规范 {namingRegex}"
                         });
                     }
 
-                    AuditStructureRecursive(child, path, depth + 1, issues, ref totalNodes, ref maxDepth);
+                    AuditStructureRecursive(child, path, depth + 1, issues, ref totalNodes, ref maxDepth,
+                        checkDepth, maxDepthWarning, checkNaming, namingRegex);
                 }
             }
             catch { }
