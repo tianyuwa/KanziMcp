@@ -1,0 +1,70 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <!-- .NET Framework 4.8 - Kanzi Studio 插件系统要求 -->
+    <TargetFramework>net48</TargetFramework>
+    <OutputType>Library</OutputType>
+    <RootNamespace>KanziMcpPlugin</RootNamespace>
+    <AssemblyName>PluginKanziMCP</AssemblyName>
+    <Version>1.0.0</Version>
+    <ImplicitUsings>disable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+    <LangVersion>latest</LangVersion>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <!-- Kanzi Studio 插件接口 -->
+    <Reference Include="PluginInterface">
+      <HintPath>..\..\PluginInterface.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+    <!-- System.Text.Json（手动引用本地 DLL，绕过 NuGet 还原问题） -->
+    <Reference Include="System.Text.Json">
+      <HintPath>lib\System.Text.Json.dll</HintPath>
+      <Private>true</Private>
+    </Reference>
+    <!-- System.Threading.Tasks.Extensions（手动引用本地 DLL） -->
+    <Reference Include="System.Threading.Tasks.Extensions">
+      <HintPath>lib\System.Threading.Tasks.Extensions.dll</HintPath>
+      <Private>true</Private>
+    </Reference>
+    <!-- System.Memory - ReadOnlySpan/ReadOnlyMemory 支持 -->
+    <Reference Include="System.Memory">
+      <HintPath>lib\System.Memory.dll</HintPath>
+      <Private>true</Private>
+    </Reference>
+    <!-- Kanzi 3.9.10 新增依赖：PluginInterface.dll 的传递依赖 -->
+    <Reference Include="Microsoft.Bcl.AsyncInterfaces">
+      <HintPath>lib\Microsoft.Bcl.AsyncInterfaces.dll</HintPath>
+      <Private>true</Private>
+    </Reference>
+    <Reference Include="System.Buffers">
+      <HintPath>lib\System.Buffers.dll</HintPath>
+      <Private>true</Private>
+    </Reference>
+    <Reference Include="System.Numerics.Vectors">
+      <HintPath>lib\System.Numerics.Vectors.dll</HintPath>
+      <Private>true</Private>
+    </Reference>
+    <Reference Include="System.Runtime.CompilerServices.Unsafe">
+      <HintPath>lib\System.Runtime.CompilerServices.Unsafe.dll</HintPath>
+      <Private>true</Private>
+    </Reference>
+    <Reference Include="System.Text.Encodings.Web">
+      <HintPath>lib\System.Text.Encodings.Web.dll</HintPath>
+      <Private>true</Private>
+    </Reference>
+    <Reference Include="System.ValueTuple">
+      <HintPath>lib\System.ValueTuple.dll</HintPath>
+      <Private>true</Private>
+    </Reference>
+    <!-- MEF - Kanzi Studio 使用 [Export(typeof(PluginContent))] 发现插件 -->
+    <Reference Include="System.ComponentModel.Composition" />
+    <!-- WPF - Kanzi Studio 是 WPF 应用，插件窗口需要 WPF 引用 -->
+    <Reference Include="PresentationCore" />
+    <Reference Include="PresentationFramework" />
+    <Reference Include="WindowsBase" />
+    <Reference Include="System.Xaml" />
+  </ItemGroup>
+
+</Project>

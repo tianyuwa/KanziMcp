@@ -1,0 +1,10 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(cmd /c publish.bat)",
+      "Bash(C:/Users/WTY/AppData/Local/Programs/Python/Python312/python.exe -m PyInstaller main.spec --distpath dist --workpath build)",
+      "Bash(C:/Users/WTY/WorkBuddy/ossutil-v1.7.19-windows-amd64/ossutil64.exe cp *)",
+      "Bash(C:/Users/WTY/WorkBuddy/ossutil-v1.7.19-windows-amd64/ossutil64.exe ls *)"
+    ]
+  }
+}

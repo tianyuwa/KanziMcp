@@ -1,0 +1,17 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <!-- MCP Server 是独立进程，保持 .NET 10 自包含发布 -->
+    <TargetFramework>net10.0</TargetFramework>
+    <RuntimeIdentifiers>win-x64;win-x86</RuntimeIdentifiers>
+    <OutputType>Exe</OutputType>
+    <RootNamespace>KanziMcpServer</RootNamespace>
+    <AssemblyName>KanziMcpServer</AssemblyName>
+    <Version>1.0.0</Version>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+  </PropertyGroup>
+
+  <!-- MCP Server 不再引用 KanziMcpPlugin，两者通过 Named Pipe 通信 -->
+
+</Project>

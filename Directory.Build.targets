@@ -1,0 +1,4 @@
+<?xml version="1.0" encoding="utf-8"?>
+<Project>
+  <!-- No custom NuGet restore overrides needed - using .NET 10 SDK -->
+</Project>
