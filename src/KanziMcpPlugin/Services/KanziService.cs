@@ -2094,7 +2094,7 @@ namespace KanziMcpPlugin.Services
                         }
 
                         // Attempt 3 (Text only): Try LocalizedString
-                        if (!setSucceeded && property == "Text")
+                        if (!setSucceeded && (property == "Text" || property == "TextConcept.Text"))
                         {
                             try
                             {
@@ -2285,7 +2285,7 @@ namespace KanziMcpPlugin.Services
 
                     // Strategy 2.6: Special handling for Text property - get Property object, unlock read-only, then set value
                     // Also handle common text node types like TextBlock, TextBox, etc.
-                    var isTextProperty = property == "Text" || property == "text";
+                    var isTextProperty = property == "Text" || property == "text" || property == "TextConcept.Text";
                     var isTextNode = itemType.Contains("Text") || itemType.Contains("text");
                     if (isTextProperty && isTextNode)
                     {
@@ -2445,7 +2445,7 @@ namespace KanziMcpPlugin.Services
                     catch (Exception ex) { Log($"SetProperty: Properties approach failed: {ex.Message}"); }
 
                     // 策略3.5: Text 属性特殊处理（LocalizedString 类型）
-                    if (property == "Text" && itemType.Contains("Text"))
+                    if ((property == "Text" || property == "TextConcept.Text") && itemType.Contains("Text"))
                     {
                         try
                         {

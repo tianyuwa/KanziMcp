@@ -193,7 +193,7 @@ public class ToolHandler
         InputSchema = Schema(new[]
         {
             Prop("path", "string", "Full node path (e.g., '/MainScreen/Header/TitleText')"),
-            Prop("property", "string", "Property name (e.g., 'FontColor', 'Text', 'Opacity')"),
+            Prop("property", "string", "Property name (e.g., 'FontColor', 'TextConcept.Text', 'Opacity')"),
             Prop("value", "object", "Property value (scalar, color {r,g,b,a}, or vector {x,y})"),
             Prop("mode", "string", "'preview' checks without applying, 'apply' makes the change", defaultValue: "preview", enumValues: new[] { "preview", "apply" }),
             Prop("force", "boolean", "Force set even if read-only", defaultValue: false),
@@ -665,6 +665,22 @@ public class ToolHandler
     private static PropertyValue ParsePropertyValue(JsonElement element)
     {
         var value = new PropertyValue();
+
+        // 简单值（string/number/bool/null/array）直接解析，不做 Object 字段探测
+        if (element.ValueKind != JsonValueKind.Object)
+        {
+            value.Value = element.ValueKind switch
+            {
+                JsonValueKind.String => element.GetString(),
+                JsonValueKind.Number => element.GetDouble(),
+                JsonValueKind.True => true,
+                JsonValueKind.False => false,
+                JsonValueKind.Null => null,
+                _ => element.ToString()
+            };
+            value.Type = element.ValueKind.ToString().ToLower();
+            return value;
+        }
 
         if (element.TryGetProperty("r", out _))
         {
