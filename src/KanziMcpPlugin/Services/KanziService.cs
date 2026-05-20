@@ -4217,65 +4217,84 @@ namespace KanziMcpPlugin.Services
                 if (project == null)
                     return ErrorJson("没有打开的项目");
 
-                var unusedResources = new List<Dictionary<string, object?>>();
+                // 阶段1: 扫描整个项目，收集所有资源定义和所有资源引用
+                var allResources = new List<(string path, string name, string type, string? filePath)>();
+                var allReferences = new HashSet<string>(); // 被引用的资源名/路径
                 var brokenReferences = new List<Dictionary<string, object?>>();
+
+                ScanProjectForResources(project, "", 0, allResources, allReferences, brokenReferences, checkBroken);
+
+                // 阶段2: 对比分析
+                var unusedResources = new List<Dictionary<string, object?>>();
                 var orphanedResources = new List<Dictionary<string, object?>>();
 
-                // 收集所有纹理资源
-                var textureLibrary = FindChildByType(project, "TextureLibrary");
-                if (textureLibrary != null)
+                if (checkUnused || checkOrphaned)
                 {
-                    CollectTextureResources(textureLibrary, unusedResources, brokenReferences, checkUnused, checkBroken);
-                }
-
-                // 收集所有材质资源
-                var materialTypes = FindChildByType(project, "MaterialTypes");
-                if (materialTypes != null)
-                {
-                    CollectMaterialResources(materialTypes, unusedResources, brokenReferences, checkUnused, checkBroken);
-                }
-
-                // 收集所有资源引用的节点
-                var allReferencingNodes = new HashSet<string>();
-                CollectResourceReferences(project, allReferencingNodes, 0);
-
-                // 检查孤立资源
-                if (checkOrphaned)
-                {
-                    foreach (var tex in unusedResources.Where(r => r["type"]?.ToString() == "texture"))
+                    foreach (var (path, name, type, filePath) in allResources)
                     {
-                        var path = tex["path"]?.ToString() ?? "";
-                        if (!allReferencingNodes.Any(r => r.Contains(path)))
+                        // 检查该资源是否被任何节点引用
+                        bool isUsed = allReferences.Contains(name)
+                            || allReferences.Any(r => r.Contains(name))
+                            || allReferences.Any(r => path.Contains(r) || r.Contains(path));
+
+                        if (!isUsed)
                         {
-                            orphanedResources.Add(new Dictionary<string, object?>
+                            unusedResources.Add(new Dictionary<string, object?>
                             {
-                                ["type"] = "orphan_texture",
+                                ["type"] = type,
                                 ["path"] = path,
-                                ["message"] = "Texture not referenced by any node"
+                                ["name"] = name
                             });
                         }
                     }
                 }
 
+                // 孤立资源 = 未使用 + 无任何引用关联
+                if (checkOrphaned)
+                {
+                    foreach (var res in unusedResources)
+                    {
+                        orphanedResources.Add(new Dictionary<string, object?>
+                        {
+                            ["type"] = res["type"],
+                            ["path"] = res["path"],
+                            ["name"] = res["name"],
+                            ["message"] = $"{res["type"]} '{res["name"]}' is not referenced by any node"
+                        });
+                    }
+                }
+
+                var allIssueCount = unusedResources.Count + brokenReferences.Count;
+
                 var recommendations = new List<string>();
+                if (allResources.Count == 0)
+                    recommendations.Add("未检测到任何资源项（资源库可能为空，或资源类型名不匹配）。请确认项目中是否存在 Texture/Material/Font 等资源。");
+                else if (allIssueCount == 0)
+                    recommendations.Add($"扫描了 {allResources.Count} 个资源，未发现未使用或损坏的资源");
                 if (unusedResources.Count > 0)
-                    recommendations.Add($"Found {unusedResources.Count} unused resources - consider removing them to reduce project size");
+                    recommendations.Add($"发现 {unusedResources.Count} 个未使用的资源，考虑移除以减少项目大小");
                 if (brokenReferences.Count > 0)
-                    recommendations.Add($"Found {brokenReferences.Count} broken references - these may cause runtime errors");
-                if (orphanedResources.Count > 0)
-                    recommendations.Add($"Found {orphanedResources.Count} orphaned resources - they exist but are not used");
+                    recommendations.Add($"发现 {brokenReferences.Count} 个损坏的引用，可能导致运行时错误");
+
+                Log($"AuditResourceReferences: {allResources.Count} resources, {allReferences.Count} refs, {unusedResources.Count} unused, {brokenReferences.Count} broken");
+
+                // 收集检测到的资源类型名（去重，取前30个）
+                var detectedTypes = allResources.Select(r => r.type).Distinct().Take(30).ToList();
 
                 return SafeSerialize(new
                 {
                     success = true,
-                    unusedResources = checkUnused ? (object)unusedResources : new List<Dictionary<string, object?>>(),
-                    brokenReferences = checkBroken ? (object)brokenReferences : new List<Dictionary<string, object?>>(),
-                    orphanedResources = checkOrphaned ? (object)orphanedResources : new List<Dictionary<string, object?>>(),
+                    unusedResources,
+                    brokenReferences,
+                    orphanedResources,
                     summary = new
                     {
+                        totalResources = allResources.Count,
                         totalUnused = unusedResources.Count,
                         totalBroken = brokenReferences.Count,
-                        totalOrphaned = orphanedResources.Count
+                        totalOrphaned = orphanedResources.Count,
+                        totalReferences = allReferences.Count,
+                        detectedResourceTypes = detectedTypes
                     },
                     recommendations
                 });
@@ -4286,143 +4305,123 @@ namespace KanziMcpPlugin.Services
             }
         }
 
-        private object? FindChildByType(object parent, string typeName)
+        /// <summary>
+        /// 递归扫描项目，收集资源定义和资源引用
+        /// </summary>
+        private void ScanProjectForResources(object parent, string parentPath, int depth,
+            List<(string path, string name, string type, string? filePath)> resources,
+            HashSet<string> references,
+            List<Dictionary<string, object?>> broken,
+            bool checkBroken)
         {
+            if (depth > 30) return;
+
             try
             {
+                var parentType = parent?.GetType().Name ?? "";
+
                 foreach (var child in GetChildren(parent))
                 {
+                    var name = GetItemName(child);
                     var type = GetItemType(child);
-                    if (type.Contains(typeName))
-                        return child;
+                    var path = string.IsNullOrEmpty(parentPath) ? name : $"{parentPath}/{name}";
 
-                    // 递归搜索
-                    var found = FindChildByType(child, typeName);
-                    if (found != null)
-                        return found;
-                }
-            }
-            catch { }
-            return null;
-        }
+                    // 识别资源类型（Kanzi 项目中的资源容器和资源项）
+                    // 注意: Image2D/TextBlock2D 等是场景节点，不是资源，不要匹配 "Image" 和 "Text"
+                    bool isResource = type.Contains("Texture") || type.Contains("Material")
+                        || type.Contains("Font") || type.Contains("Shader")
+                        || type.Contains("Brush") || type.Contains("Style")
+                        || type.Contains("Animation") || type.Contains("State")
+                        || type.Contains("Resource") || type.Contains("Asset")
+                        || type.Contains("Render") || type.Contains("Shader")
+                        || type.Contains("Mesh") || type.Contains("Prefab")
+                        || type.Contains("Composition") || type.Contains("Script")
+                        || type.Contains("Data") || type.Contains("Locale");
 
-        private void CollectTextureResources(object textureLibrary, List<Dictionary<string, object?>> unused,
-            List<Dictionary<string, object?>> broken, bool checkUnused, bool checkBroken)
-        {
-            try
-            {
-                foreach (var tex in GetChildren(textureLibrary))
-                {
-                    var name = GetItemName(tex);
-                    var path = GetItemPath(tex);
-                    var type = GetItemType(tex);
+                    // 检查是否在资源库容器内（父节点类型含 Library/Dictionary/Resource）
+                    bool inResourceContainer = parentType.Contains("Library")
+                        || parentType.Contains("Dictionary")
+                        || parentType.Contains("Resource")
+                        || parentType.Contains("Asset")
+                        || parentType.Contains("Collection")
+                        || parentType.Contains("Repository");
 
-                    if (type.Contains("Texture"))
+                    // 资源项：要么自身类型是资源类型，要么在资源容器内
+                    if ((isResource || inResourceContainer) && !type.Contains("Plugin") && !type.Contains("Wrapper"))
                     {
-                        // 检查是否为有效纹理
-                        bool isValid = false;
-                        try
+                        string? filePath = null;
+
+                        // 对纹理类型，尝试提取文件路径
+                        if (checkBroken && type.Contains("Texture"))
                         {
-                            // 尝试获取纹理属性
-                            var texProp = SafeGetProperty(tex, "Texture");
-                            if (texProp != null)
+                            try
                             {
-                                isValid = true;
-                                // 检查是否有文件引用
-                                var filePath = SafeGetProperty(tex, "FilePath") as string;
-                                if (checkBroken && !string.IsNullOrEmpty(filePath) && !File.Exists(filePath))
+                                filePath = SafeGetProperty(child, "FilePath") as string
+                                    ?? SafeGetProperty(child, "Source") as string
+                                    ?? SafeGetProperty(child, "Image") as string;
+                                if (!string.IsNullOrEmpty(filePath) && !File.Exists(filePath))
                                 {
-                                    broken.Add(new Dictionary<string, object?>
+                                    // 尝试相对于项目目录
+                                    var projectDir = Path.GetDirectoryName(SafeGetProperty(GetActiveProject(), "FullPath") as string ?? "");
+                                    var fullPath = string.IsNullOrEmpty(projectDir) ? filePath : Path.Combine(projectDir, filePath);
+                                    if (!File.Exists(fullPath))
                                     {
-                                        ["type"] = "broken_texture",
-                                        ["path"] = path,
-                                        ["filePath"] = filePath,
-                                        ["message"] = "Texture file not found"
-                                    });
+                                        broken.Add(new Dictionary<string, object?>
+                                        {
+                                            ["type"] = "broken_resource",
+                                            ["resourceType"] = type,
+                                            ["path"] = path,
+                                            ["filePath"] = filePath,
+                                            ["message"] = $"Resource file not found: {filePath}"
+                                        });
+                                    }
                                 }
                             }
+                            catch { }
                         }
-                        catch { isValid = true; } // 默认认为有效
 
-                        if (checkUnused && isValid)
-                        {
-                            unused.Add(new Dictionary<string, object?>
-                            {
-                                ["type"] = "texture",
-                                ["path"] = path,
-                                ["name"] = name
-                            });
-                        }
+                        resources.Add((path, name, type, filePath));
                     }
-                }
-            }
-            catch { }
-        }
 
-        private void CollectMaterialResources(object materialTypes, List<Dictionary<string, object?>> unused,
-            List<Dictionary<string, object?>> broken, bool checkUnused, bool checkBroken)
-        {
-            try
-            {
-                foreach (var mat in GetChildren(materialTypes))
-                {
-                    var name = GetItemName(mat);
-                    var path = GetItemPath(mat);
-                    var type = GetItemType(mat);
-
-                    if (type.Contains("Material"))
+                    // 收集该节点的所有属性值作为引用候选
+                    try
                     {
-                        if (checkUnused)
+                        var props = child.GetType().GetProperty("Properties",
+                            BindingFlags.Public | BindingFlags.Instance | BindingFlags.FlattenHierarchy);
+                        if (props != null)
                         {
-                            unused.Add(new Dictionary<string, object?>
+                            var propValues = props.GetValue(child) as IEnumerable;
+                            if (propValues != null)
                             {
-                                ["type"] = "material",
-                                ["path"] = path,
-                                ["name"] = name
-                            });
-                        }
-                    }
-                }
-            }
-            catch { }
-        }
-
-        private void CollectResourceReferences(object parent, HashSet<string> references, int depth)
-        {
-            if (depth > 20) return;
-
-            try
-            {
-                var itemType = parent.GetType().Name;
-
-                // 检查属性中的资源引用
-                try
-                {
-                    var props = parent.GetType().GetProperty("Properties",
-                        BindingFlags.Public | BindingFlags.Instance | BindingFlags.FlattenHierarchy);
-                    if (props != null)
-                    {
-                        var propValues = props.GetValue(parent) as IEnumerable;
-                        if (propValues != null)
-                        {
-                            foreach (var p in propValues)
-                            {
-                                var propName = SafeGetProperty(p, "Name") as string;
-                                var propValue = SafeGetProperty(p, "Value");
-                                if (propValue != null)
+                                foreach (var p in propValues)
                                 {
-                                    references.Add($"{GetItemPath(parent)}.{propName}={propValue}");
+                                    var propName = SafeGetProperty(p, "Name") as string ?? "";
+                                    var propValue = SafeGetProperty(p, "Value");
+
+                                    if (propValue != null)
+                                    {
+                                        var valStr = propValue.ToString() ?? "";
+                                        if (!string.IsNullOrEmpty(valStr) && valStr.Length > 1)
+                                        {
+                                            references.Add(valStr);
+
+                                            // 如果属性名暗示资源引用，也加入属性值
+                                            if (propName.Contains("Texture") || propName.Contains("Material")
+                                                || propName.Contains("Font") || propName.Contains("Image")
+                                                || propName.Contains("Shader") || propName.Contains("Brush"))
+                                            {
+                                                references.Add(valStr);
+                                            }
+                                        }
+                                    }
                                 }
                             }
                         }
                     }
-                }
-                catch { }
+                    catch { }
 
-                // 递归处理子节点
-                foreach (var child in GetChildren(parent))
-                {
-                    CollectResourceReferences(child, references, depth + 1);
+                    // 递归
+                    ScanProjectForResources(child, path, depth + 1, resources, references, broken, checkBroken);
                 }
             }
             catch { }
