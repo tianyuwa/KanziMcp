@@ -5457,206 +5457,69 @@ namespace KanziMcpPlugin.Services
                 if (project == null)
                     return ErrorJson("No active project");
 
+                // Convert to internal types
+                var internalProject = GetInternalProjectItem(project);
+                Log($"ImportImage: project={project.GetType().Name}, internalProject={internalProject?.GetType().Name}");
+
                 // Find or create Textures folder
                 var texturesFolder = GetOrCreateResourceFolder(project, targetFolder);
                 if (texturesFolder == null)
                     return ErrorJson($"Cannot find or create resource folder: {targetFolder}");
-
                 Log($"ImportImage: found textures folder: {GetItemName(texturesFolder)}");
 
+                // Step 1: Copy the file to the project's Images directory, then import it
+                var imageFilePath = CopyFileToProjectImages(internalProject ?? project, filePath);
+                Log($"ImportImage: local image path for import: {imageFilePath}");
+
+                // Step 2: Try to import the image file into ImageDirectory to create an ImageFile
+                object? imageFile = TryImportImageFile(internalProject ?? project, imageFilePath ?? filePath);
+
+                // Step 2: Clone DefaultTexture
                 object? importedItem = null;
-
-                // Strategy 1: Use TextureLibrary.Import method
-                var importMethod = texturesFolder.GetType().GetMethod("Import",
-                    BindingFlags.Public | BindingFlags.Instance | BindingFlags.FlattenHierarchy,
-                    null, new[] { typeof(string) }, null);
-
-                if (importMethod != null)
+                try
                 {
-                    try
+                    var defaultTexProp = (internalProject ?? project).GetType().GetProperty("DefaultTexture",
+                        BindingFlags.Public | BindingFlags.Instance | BindingFlags.FlattenHierarchy);
+                    if (defaultTexProp != null)
                     {
-                        Log($"ImportImage: trying Import method");
-                        importedItem = importMethod.Invoke(texturesFolder, new object[] { filePath });
-                        if (importedItem != null)
-                            Log($"ImportImage: Import method succeeded");
-                    }
-                    catch (Exception ex)
-                    {
-                        Log($"ImportImage: Import method failed: {ex.Message}");
-                    }
-                }
+                        var defaultTexture = defaultTexProp.GetValue(internalProject ?? project);
+                        Log($"ImportImage: DefaultTexture={defaultTexture?.GetType().Name}");
 
-                // Strategy 2: Use ImportImageFile or similar method
-                if (importedItem == null)
-                {
-                    foreach (var methodName in new[] { "ImportImageFile", "ImportTexture", "AddImage", "AddTexture" })
-                    {
-                        var altMethod = texturesFolder.GetType().GetMethod(methodName,
-                            BindingFlags.Public | BindingFlags.Instance | BindingFlags.FlattenHierarchy);
-                        if (altMethod != null)
+                        if (defaultTexture != null)
                         {
-                            try
+                            var internalTemplate = GetInternalProjectItem(defaultTexture);
+                            if (internalTemplate != null)
                             {
-                                Log($"ImportImage: trying {methodName}");
-                                var parameters = altMethod.GetParameters();
-                                if (parameters.Length == 1)
-                                {
-                                    importedItem = altMethod.Invoke(texturesFolder, new object[] { filePath });
-                                }
-                                else if (parameters.Length >= 2)
-                                {
-                                    // Try with additional parameters
-                                    importedItem = altMethod.Invoke(texturesFolder, new[] { filePath, resourceName ?? System.IO.Path.GetFileNameWithoutExtension(filePath) });
-                                }
-                                if (importedItem != null)
-                                {
-                                    Log($"ImportImage: {methodName} succeeded");
-                                    break;
-                                }
-                            }
-                            catch (Exception ex)
-                            {
-                                Log($"ImportImage: {methodName} failed: {ex.Message}");
-                            }
-                        }
-                    }
-                }
-
-                // Strategy 3: Try to use Studio's import functionality
-                if (importedItem == null)
-                {
-                    try
-                    {
-                        var studioType = _studio.GetType();
-                        // Look for importers or resource factories
-                        var createTextureMethod = studioType.GetMethod("CreateTexture",
-                            BindingFlags.Public | BindingFlags.Instance);
-                        if (createTextureMethod != null)
-                        {
-                            Log($"ImportImage: trying CreateTexture");
-                            importedItem = createTextureMethod.Invoke(_studio, new object[] { filePath });
-                        }
-                    }
-                    catch (Exception ex)
-                    {
-                        Log($"ImportImage: CreateTexture failed: {ex.Message}");
-                    }
-                }
-
-                // Strategy 4: Create texture object directly and add to library
-                if (importedItem == null)
-                {
-                    try
-                    {
-                        // Find SingleTexture or similar type
-                        var textureType = FindTypeInAssemblies("SingleTexture") ??
-                                        FindTypeInAssemblies("Texture") ??
-                                        FindTypeInAssemblies("Image");
-
-                        if (textureType != null)
-                        {
-                            Log($"ImportImage: found texture type: {textureType.FullName}");
-
-                            // Try to create instance
-                            object? textureObj = null;
-                            var ctorWithPath = textureType.GetConstructor(
-                                BindingFlags.Public | BindingFlags.Instance,
-                                null, new[] { typeof(string) }, null);
-                            if (ctorWithPath != null)
-                            {
-                                textureObj = ctorWithPath.Invoke(new object[] { filePath });
-                            }
-
-                            if (textureObj != null)
-                            {
-                                // Add to texture library
-                                var addMethod = texturesFolder.GetType().GetMethod("AddChild",
+                                var cloneMethod = internalTemplate.GetType().GetMethod("CloneUnder",
                                     BindingFlags.Public | BindingFlags.Instance);
-                                if (addMethod != null)
+                                if (cloneMethod != null)
                                 {
-                                    importedItem = addMethod.Invoke(texturesFolder, new[] { textureObj });
-                                    Log($"ImportImage: created texture and added to library");
+                                    var pars = cloneMethod.GetParameters();
+                                    var cloneName = resourceName ?? System.IO.Path.GetFileNameWithoutExtension(filePath);
+                                    var internalParent = GetInternalProjectItem(texturesFolder) ?? texturesFolder;
+                                    var cloneMethodArg = Enum.GetValues(pars[2].ParameterType).GetValue(0);
+                                    importedItem = cloneMethod.Invoke(internalTemplate,
+                                        new[] { cloneName, internalParent, cloneMethodArg });
+                                    Log($"ImportImage: CloneUnder succeeded");
+
+                                    // Step 3: Set TextureImage to the ImageFile
+                                    if (importedItem != null && imageFile != null)
+                                    {
+                                        SetTextureImageProperty(importedItem, imageFile);
+                                    }
+                                    else if (importedItem != null)
+                                    {
+                                        Log($"ImportImage: no ImageFile available, trying SetTextureSourceFile fallback...");
+                                        SetTextureSourceFile(importedItem, filePath);
+                                    }
                                 }
                             }
                         }
                     }
-                    catch (Exception ex)
-                    {
-                        Log($"ImportImage: direct texture creation failed: {ex.Message}");
-                    }
                 }
-
-                // Strategy 5: Try using Studio's Commands API to execute ImportImages command
-                if (importedItem == null && _studio != null)
+                catch (Exception ex)
                 {
-                    try
-                    {
-                        Log($"ImportImage: trying ExecutePluginCommand for ImportImages...");
-
-                        // Find the ImportImages command on KanziStudio
-                        var studioType = _studio.GetType();
-
-                        // Try ExecutePluginCommand with string
-                        var execMethod = studioType.GetMethod("ExecutePluginCommand",
-                            BindingFlags.Public | BindingFlags.Instance,
-                            null, new Type[] { typeof(string), typeof(IEnumerable<ProjectItem>) }, null);
-
-                        if (execMethod != null)
-                        {
-                            try
-                            {
-                                // Create a list with the texture folder as target
-                                var targetItems = new List<ProjectItem> { (ProjectItem)texturesFolder };
-                                execMethod.Invoke(_studio, new object[] { "ImportImages", targetItems });
-                                Log($"ImportImage: ExecutePluginCommand executed");
-                            }
-                            catch (Exception ex)
-                            {
-                                Log($"ImportImage: ExecutePluginCommand failed: {ex.Message}");
-                            }
-                        }
-                    }
-                    catch (Exception ex)
-                    {
-                        Log($"ImportImage: ExecutePluginCommand strategy failed: {ex.Message}");
-                    }
-                }
-
-                // Strategy 6: Check if file exists first, provide better error
-                if (importedItem == null)
-                {
-                    if (!System.IO.File.Exists(filePath))
-                    {
-                        return ErrorJson($"File not found: {filePath}. Please ensure the file exists and the path is correct.");
-                    }
-
-                    // Try to create a placeholder texture with the file as source
-                    try
-                    {
-                        Log($"ImportImage: trying to create texture with file source...");
-
-                        // Get the texture library's children
-                        var childrenProp = texturesFolder.GetType().GetProperty("Children",
-                            BindingFlags.Public | BindingFlags.Instance);
-                        if (childrenProp != null)
-                        {
-                            var children = childrenProp.GetValue(texturesFolder) as IList;
-                            if (children != null)
-                            {
-                                // Find the type for SingleTexture
-                                var singleTextureType = FindTypeInAssemblies("SingleTexture");
-                                if (singleTextureType != null)
-                                {
-                                    // Try to create and configure
-                                    Log($"ImportImage: found SingleTexture type: {singleTextureType.FullName}");
-                                }
-                            }
-                        }
-                    }
-                    catch (Exception ex)
-                    {
-                        Log($"ImportImage: placeholder creation failed: {ex.Message}");
-                    }
+                    Log($"ImportImage: CloneUnder strategy failed: {ex.Message}");
                 }
 
                 if (importedItem != null)
@@ -5959,6 +5822,321 @@ namespace KanziMcpPlugin.Services
                 }
             }
             catch { }
+        }
+
+        /// <summary>
+        /// 复制文件到项目的 Images 目录下，返回本地路径
+        /// </summary>
+        private string? CopyFileToProjectImages(object internalProject, string sourceFilePath)
+        {
+            try
+            {
+                // Try to get the project's directory path
+                var projectType = internalProject.GetType();
+                string? projectDir = null;
+
+                // Try "ProjectDirectory" property
+                var projDirProp = projectType.GetProperty("ProjectDirectory",
+                    BindingFlags.Public | BindingFlags.Instance | BindingFlags.FlattenHierarchy);
+                if (projDirProp != null)
+                {
+                    projectDir = projDirProp.GetValue(internalProject) as string;
+                }
+
+                // Fallback: try GetAbsolutePath("")
+                if (string.IsNullOrEmpty(projectDir))
+                {
+                    var getAbsPath = projectType.GetMethod("GetAbsolutePath",
+                        BindingFlags.Public | BindingFlags.Instance | BindingFlags.FlattenHierarchy);
+                    if (getAbsPath != null)
+                    {
+                        try { projectDir = getAbsPath.Invoke(internalProject, new object[] { "" }) as string; }
+                        catch { }
+                    }
+                }
+
+                // Fallback: try "ProjectFilePath" or "FilePath" property
+                if (string.IsNullOrEmpty(projectDir))
+                {
+                    foreach (var propName in new[] { "ProjectFilePath", "FilePath", "ProjectPath", "RootPath", "RootDirectory" })
+                    {
+                        var prop = projectType.GetProperty(propName,
+                            BindingFlags.Public | BindingFlags.Instance | BindingFlags.FlattenHierarchy);
+                        if (prop != null)
+                        {
+                            projectDir = prop.GetValue(internalProject) as string;
+                            if (!string.IsNullOrEmpty(projectDir))
+                            {
+                                // If it's a file path, get the directory
+                                try { projectDir = System.IO.Path.GetDirectoryName(projectDir); }
+                                catch { }
+                                break;
+                            }
+                        }
+                    }
+                }
+
+                Log($"CopyFileToProjectImages: projectDir={projectDir}");
+
+                if (string.IsNullOrEmpty(projectDir))
+                    return null;
+
+                var imagesDir = System.IO.Path.Combine(projectDir, "Images");
+                if (!System.IO.Directory.Exists(imagesDir))
+                    System.IO.Directory.CreateDirectory(imagesDir);
+
+                var fileName = System.IO.Path.GetFileName(sourceFilePath);
+                var destPath = System.IO.Path.Combine(imagesDir, fileName);
+
+                // Don't copy if source is already in the Images directory
+                if (string.Equals(sourceFilePath, destPath, StringComparison.OrdinalIgnoreCase))
+                    return sourceFilePath;
+
+                System.IO.File.Copy(sourceFilePath, destPath, true);
+                Log($"CopyFileToProjectImages: copied to {destPath}");
+                return destPath;
+            }
+            catch (Exception ex)
+            {
+                Log($"CopyFileToProjectImages error: {ex.Message}");
+                return null;
+            }
+        }
+
+        /// <summary>
+        /// 尝试通过 ImageDirectory 导入图片文件，返回 ImageFile 对象
+        /// </summary>
+        private object? TryImportImageFile(object internalProject, string filePath)
+        {
+            try
+            {
+                var imgDirProp = internalProject.GetType().GetProperty("ImageDirectory",
+                    BindingFlags.Public | BindingFlags.Instance | BindingFlags.FlattenHierarchy);
+                if (imgDirProp == null)
+                {
+                    Log($"TryImportImageFile: ImageDirectory property not found");
+                    return null;
+                }
+
+                var imageDir = imgDirProp.GetValue(internalProject);
+                Log($"TryImportImageFile: ImageDirectory={imageDir?.GetType().Name}");
+
+                if (imageDir == null) return null;
+
+                // Diagnostic: log all methods
+                var dirMethods = imageDir.GetType().GetMethods(
+                    BindingFlags.Public | BindingFlags.Instance | BindingFlags.FlattenHierarchy)
+                    .Where(m => !m.IsSpecialName)
+                    .Select(m => $"{m.ReturnType.Name} {m.Name}({string.Join(",", m.GetParameters().Select(p => $"{p.ParameterType.Name}"))})")
+                    .ToList();
+                Log($"TryImportImageFile: ImageDirectory methods: {string.Join("; ", dirMethods)}");
+
+                // Try AddNewFile(String) — discovered from API: ObservableFile AddNewFile(String)
+                var addNewFileMethod = imageDir.GetType().GetMethod("AddNewFile",
+                    BindingFlags.Public | BindingFlags.Instance | BindingFlags.FlattenHierarchy);
+                if (addNewFileMethod != null)
+                {
+                    try
+                    {
+                        Log($"TryImportImageFile: calling AddNewFile({filePath})");
+                        var result = addNewFileMethod.Invoke(imageDir, new object[] { filePath });
+                        if (result != null)
+                        {
+                            Log($"TryImportImageFile: AddNewFile succeeded, result={result.GetType().Name}");
+                            return result;
+                        }
+                    }
+                    catch (Exception ex)
+                    {
+                        Log($"TryImportImageFile: AddNewFile failed: {ex.Message}");
+                        if (ex.InnerException != null)
+                            Log($"TryImportImageFile: AddNewFile InnerException: {ex.InnerException.Message}");
+                    }
+                }
+
+                // Try CreateFile(String,String) — name + filePath
+                var createFileMethod = imageDir.GetType().GetMethod("CreateFile",
+                    BindingFlags.Public | BindingFlags.Instance | BindingFlags.FlattenHierarchy);
+                if (createFileMethod != null)
+                {
+                    try
+                    {
+                        var fileName = System.IO.Path.GetFileName(filePath);
+                        Log($"TryImportImageFile: calling CreateFile({fileName}, {filePath})");
+                        createFileMethod.Invoke(imageDir, new object[] { fileName, filePath });
+                        // CreateFile returns void, so try to get the created file by name
+                        var getChildMethod = imageDir.GetType().GetMethod("GetChildByName",
+                            BindingFlags.Public | BindingFlags.Instance);
+                        if (getChildMethod != null)
+                        {
+                            var child = getChildMethod.Invoke(imageDir, new object[] { fileName });
+                            if (child != null)
+                            {
+                                Log($"TryImportImageFile: found created file via GetChildByName: {child.GetType().Name}");
+                                return child;
+                            }
+                        }
+                    }
+                    catch (Exception ex)
+                    {
+                        Log($"TryImportImageFile: CreateFile failed: {ex.Message}");
+                    }
+                }
+            }
+            catch (Exception ex)
+            {
+                Log($"TryImportImageFile error: {ex.Message}");
+            }
+            return null;
+        }
+
+        /// <summary>
+        /// 设置纹理的 TextureImage 属性（类型为 ImageFile）
+        /// </summary>
+        private void SetTextureImageProperty(object textureItem, object imageFile)
+        {
+            try
+            {
+                var internalTexture = GetInternalProjectItem(textureItem) ?? textureItem;
+                var texType = internalTexture.GetType();
+
+                var texImageProp = texType.GetProperty("TextureImage",
+                    BindingFlags.Public | BindingFlags.Instance | BindingFlags.FlattenHierarchy);
+                if (texImageProp != null && texImageProp.CanWrite)
+                {
+                    try
+                    {
+                        texImageProp.SetValue(internalTexture, imageFile);
+                        Log($"SetTextureImageProperty: set TextureImage successfully");
+                        return;
+                    }
+                    catch (Exception ex)
+                    {
+                        Log($"SetTextureImageProperty: set failed: {ex.Message}");
+                    }
+                }
+
+                // Fallback: try SetPropertyWithCommand
+                var setPropMethod = texType.GetMethod("SetPropertyWithCommand",
+                    BindingFlags.Public | BindingFlags.Instance | BindingFlags.FlattenHierarchy);
+                if (setPropMethod != null)
+                {
+                    try
+                    {
+                        setPropMethod.Invoke(internalTexture, new[] { "TextureImage", imageFile });
+                        Log($"SetTextureImageProperty: set via SetPropertyWithCommand");
+                        return;
+                    }
+                    catch (Exception ex)
+                    {
+                        Log($"SetTextureImageProperty: SetPropertyWithCommand failed: {ex.Message}");
+                    }
+                }
+
+                Log($"SetTextureImageProperty: could not set TextureImage");
+            }
+            catch (Exception ex)
+            {
+                Log($"SetTextureImageProperty error: {ex.Message}");
+            }
+        }
+
+        /// <summary>
+        /// 设置纹理的源文件路径（fallback when no ImageFile available）
+        /// </summary>
+        private void SetTextureSourceFile(object textureItem, string filePath)
+        {
+            try
+            {
+                var internalTexture = GetInternalProjectItem(textureItem) ?? textureItem;
+                var texType = internalTexture.GetType();
+
+                // Try TextureImage first (it's an ImageFile type, not string)
+                var texImageProp = texType.GetProperty("TextureImage",
+                    BindingFlags.Public | BindingFlags.Instance | BindingFlags.FlattenHierarchy);
+                if (texImageProp != null && texImageProp.CanWrite)
+                {
+                    // Try to construct an ImageFile from the file path
+                    var imageFileType = texImageProp.PropertyType;
+                    var ctor = imageFileType.GetConstructor(
+                        BindingFlags.Public | BindingFlags.Instance, null,
+                        new[] { typeof(string) }, null);
+                    if (ctor != null)
+                    {
+                        try
+                        {
+                            var imageFile = ctor.Invoke(new object[] { filePath });
+                            texImageProp.SetValue(internalTexture, imageFile);
+                            Log($"SetTextureSourceFile: created {imageFileType.Name} from path and set TextureImage");
+                            return;
+                        }
+                        catch (Exception ex)
+                        {
+                            Log($"SetTextureSourceFile: failed to create ImageFile: {ex.Message}");
+                        }
+                    }
+                }
+                Log($"SetTextureSourceFile: could not set image source on {texType.Name}");
+            }
+            catch (Exception ex)
+            {
+                Log($"SetTextureSourceFile error: {ex.Message}");
+            }
+        }
+
+        /// <summary>
+        /// 从 ImageFile 创建纹理
+        /// </summary>
+        private object? CreateTextureFromImageFile(object project, object imageFile, string? resourceName)
+        {
+            try
+            {
+                // Try to find a method that creates texture from image file
+                var texLibProp = project.GetType().GetProperty("TextureLibrary",
+                    BindingFlags.Public | BindingFlags.Instance | BindingFlags.FlattenHierarchy);
+                if (texLibProp == null) return null;
+
+                var texLib = texLibProp.GetValue(project);
+                if (texLib == null) return null;
+
+                foreach (var methodName in new[] { "CreateTexture", "AddTexture", "AddNewItem", "CreateItem", "AddChild" })
+                {
+                    var method = texLib.GetType().GetMethod(methodName,
+                        BindingFlags.Public | BindingFlags.Instance | BindingFlags.FlattenHierarchy);
+                    if (method == null) continue;
+                    try
+                    {
+                        var parameters = method.GetParameters();
+                        object? result;
+                        if (parameters.Length == 1)
+                        {
+                            result = method.Invoke(texLib, new[] { imageFile });
+                        }
+                        else if (parameters.Length == 2 && parameters[0].ParameterType.IsAssignableFrom(imageFile.GetType()))
+                        {
+                            result = method.Invoke(texLib, new[] { imageFile, resourceName ?? "NewTexture" });
+                        }
+                        else
+                        {
+                            continue;
+                        }
+                        if (result != null)
+                        {
+                            Log($"CreateTextureFromImageFile: {methodName} succeeded");
+                            return result;
+                        }
+                    }
+                    catch (Exception ex)
+                    {
+                        Log($"CreateTextureFromImageFile: {methodName} failed: {ex.Message}");
+                    }
+                }
+            }
+            catch (Exception ex)
+            {
+                Log($"CreateTextureFromImageFile error: {ex.Message}");
+            }
+            return null;
         }
 
         private object? GetOrCreateResourceFolder(object project, string folderName)
