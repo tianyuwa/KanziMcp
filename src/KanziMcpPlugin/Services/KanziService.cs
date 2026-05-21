@@ -4536,6 +4536,12 @@ namespace KanziMcpPlugin.Services
 
                 Log($"CreateNode: parent={parentPath}, type={nodeType}, name={nodeName}");
 
+                // Convert PluginInterface types to internal types for API access
+                var internalParent = GetInternalProjectItem(parentItem);
+                var internalProject = GetInternalProjectItem(project);
+                var normalizedType = NormalizeNodeTypeName(nodeType);
+                Log($"CreateNode: parentItem={parentItem.GetType().Name}, internalParent={internalParent?.GetType().Name}, project={project.GetType().Name}, internalProject={internalProject?.GetType().Name}");
+
                 // Try to create node using various methods
                 object? newNode = null;
 
@@ -4558,46 +4564,130 @@ namespace KanziMcpPlugin.Services
                     }
                 }
 
-                // Strategy 2: Try with NodeComponentTypeLibrary
+                // Strategy 2: NodeComponentTypeLibrary — on internal project type
                 if (newNode == null)
                 {
                     try
                     {
-                        var typeLibProp = project.GetType().GetProperty("NodeComponentTypeLibrary",
+                        var libSource = internalProject ?? project;
+                        var typeLibProp = libSource.GetType().GetProperty("NodeComponentTypeLibrary",
                             BindingFlags.Public | BindingFlags.Instance | BindingFlags.FlattenHierarchy);
                         if (typeLibProp != null)
                         {
-                            var typeLib = typeLibProp.GetValue(project);
-                            if (typeLib != null)
+                            var typeLib = typeLibProp.GetValue(libSource);
+                            if (typeLib is IEnumerable libItems)
                             {
-                                // Try to find type in library
-                                var findTypeMethod = typeLib.GetType().GetMethod("GetItemByName",
-                                    BindingFlags.Public | BindingFlags.Instance);
-                                if (findTypeMethod != null)
+                                var allNames = new List<string>();
+                                foreach (var item in libItems)
                                 {
-                                    var typeInfo = findTypeMethod.Invoke(typeLib, new object[] { nodeType });
-                                    if (typeInfo != null)
+                                    var itemName = GetItemName(item);
+                                    allNames.Add(itemName);
+                                    if (string.Equals(itemName, nodeType, StringComparison.OrdinalIgnoreCase) ||
+                                        string.Equals(NormalizeNodeTypeName(itemName), normalizedType, StringComparison.OrdinalIgnoreCase))
                                     {
-                                        // Try to create instance from type info
-                                        var createInstanceMethod = typeLib.GetType().GetMethod("CreateNode",
-                                            BindingFlags.Public | BindingFlags.Instance);
-                                        if (createInstanceMethod != null)
+                                        Log($"CreateNode: found NodeComponentTypeLibrary item: {itemName}");
+                                        var defaultInst = SafeGetProperty(item, "DefaultInstance");
+                                        if (defaultInst != null)
                                         {
-                                            try
+                                            var cloneMethod = defaultInst.GetType().GetMethod("CloneUnder",
+                                                BindingFlags.Public | BindingFlags.Instance);
+                                            if (cloneMethod != null)
                                             {
-                                                newNode = createInstanceMethod.Invoke(typeLib, new object[] { parentItem, typeInfo });
-                                                Log($"CreateNode: created via NodeComponentTypeLibrary");
+                                                try
+                                                {
+                                                    var pars = cloneMethod.GetParameters();
+                                                    var cloneName = nodeName ?? $"New{nodeType}";
+                                                    var cloneParent = internalParent ?? parentItem;
+                                                    if (pars.Length >= 3)
+                                                        newNode = cloneMethod.Invoke(defaultInst, new[] { cloneName, cloneParent, Enum.GetValues(pars[2].ParameterType).GetValue(0) });
+                                                    else
+                                                        newNode = cloneMethod.Invoke(defaultInst, new[] { cloneName, cloneParent });
+                                                    if (newNode != null)
+                                                        Log($"CreateNode: created via NodeComponentTypeLibrary CloneUnder");
+                                                }
+                                                catch (Exception ex) { Log($"CreateNode: NodeComponentTypeLibrary CloneUnder failed: {ex.Message}"); }
                                             }
-                                            catch { }
                                         }
+                                        break;
                                     }
                                 }
+                                if (newNode == null && allNames.Count > 0)
+                                    Log($"CreateNode: NodeComponentTypeLibrary has {allNames.Count} items, none match '{nodeType}': {string.Join(", ", allNames.Take(20))}");
                             }
+                            else
+                            {
+                                Log($"CreateNode: NodeComponentTypeLibrary value is not IEnumerable");
+                            }
+                        }
+                        else
+                        {
+                            Log($"CreateNode: NodeComponentTypeLibrary property not found on {libSource.GetType().Name}");
                         }
                     }
                     catch (Exception ex)
                     {
                         Log($"CreateNode: NodeComponentTypeLibrary approach failed: {ex.Message}");
+                    }
+                }
+
+                // Strategy 2b: ComponentTypeLibrary — for UI/scene node types
+                if (newNode == null)
+                {
+                    try
+                    {
+                        foreach (var source in new[] { internalProject, project, internalParent ?? parentItem, parentItem })
+                        {
+                            if (source == null) continue;
+                            var ctlProp = source.GetType().GetProperty("ComponentTypeLibrary",
+                                BindingFlags.Public | BindingFlags.Instance | BindingFlags.FlattenHierarchy);
+                            if (ctlProp == null) continue;
+                            var ctl = ctlProp.GetValue(source);
+                            if (ctl is not IEnumerable ctlItems) continue;
+
+                            var allNames = new List<string>();
+                            foreach (var item in ctlItems)
+                            {
+                                var itemName = GetItemName(item);
+                                allNames.Add(itemName);
+                                if (string.Equals(itemName, nodeType, StringComparison.OrdinalIgnoreCase) ||
+                                    string.Equals(NormalizeNodeTypeName(itemName), normalizedType, StringComparison.OrdinalIgnoreCase))
+                                {
+                                    Log($"CreateNode: found ComponentTypeLibrary item: {itemName}");
+                                    var defaultInst = SafeGetProperty(item, "DefaultInstance");
+                                    if (defaultInst != null)
+                                    {
+                                        var cloneMethod = defaultInst.GetType().GetMethod("CloneUnder",
+                                            BindingFlags.Public | BindingFlags.Instance);
+                                        if (cloneMethod != null)
+                                        {
+                                            try
+                                            {
+                                                var pars = cloneMethod.GetParameters();
+                                                var cloneName = nodeName ?? $"New{nodeType}";
+                                                var cloneParent = internalParent ?? parentItem;
+                                                if (pars.Length >= 3)
+                                                    newNode = cloneMethod.Invoke(defaultInst, new[] { cloneName, cloneParent, Enum.GetValues(pars[2].ParameterType).GetValue(0) });
+                                                else
+                                                    newNode = cloneMethod.Invoke(defaultInst, new[] { cloneName, cloneParent });
+                                                if (newNode != null)
+                                                {
+                                                    Log($"CreateNode: created via ComponentTypeLibrary CloneUnder");
+                                                    break;
+                                                }
+                                            }
+                                            catch (Exception ex) { Log($"CreateNode: ComponentTypeLibrary CloneUnder failed: {ex.Message}"); }
+                                        }
+                                    }
+                                }
+                            }
+                            if (newNode != null) break;
+                            if (allNames.Count > 0)
+                                Log($"CreateNode: ComponentTypeLibrary on {source.GetType().Name} has {allNames.Count} items, none match '{nodeType}': {string.Join(", ", allNames.Take(20))}");
+                        }
+                    }
+                    catch (Exception ex)
+                    {
+                        Log($"CreateNode: ComponentTypeLibrary approach failed: {ex.Message}");
                     }
                 }
 
@@ -4729,12 +4819,13 @@ namespace KanziMcpPlugin.Services
                         Log($"CreateNode: trying CloneUnder strategy...");
 
                         // First, find a template node of the requested type
-                        string templatePath = nodeType switch
+                        string? templatePath = nodeType switch
                         {
-                            "EmptyNode2D" => "Templates/DefaultNode2D",
-                            "TextBlock2D" => "Templates/DefaultTextBlock2D",
-                            "RectangleNode2D" => "Templates/DefaultRectangleNode2D",
-                            "Image2D" => "Templates/DefaultImage2D",
+                            "EmptyNode2D" or "Empty Node 2D" => "Templates/DefaultNode2D",
+                            "Node2D" or "Node 2D" => "Templates/DefaultNode2D",
+                            "TextBlock2D" or "Text Block 2D" => "Templates/DefaultTextBlock2D",
+                            "RectangleNode2D" or "Rectangle Node 2D" => "Templates/DefaultRectangleNode2D",
+                            "Image2D" or "Image 2D" => "Templates/DefaultImage2D",
                             _ => null
                         };
 
@@ -4766,31 +4857,46 @@ namespace KanziMcpPlugin.Services
                             catch { }
                         }
 
-                        // If we have a template node, try CloneUnder
+                        // If we have a template node, try CloneUnder on internal type
                         if (templateNode != null)
                         {
-                            var cloneUnderMethod = templateNode.GetType().GetMethod("CloneUnder",
-                                BindingFlags.Public | BindingFlags.Instance);
-                            if (cloneUnderMethod != null)
-                            {
-                                try
-                                {
-                                    // CloneUnder(name, parent, CloneMethod)
-                                    // CloneMethod might be an enum, try to find it
-                                    var cloneMethodType = cloneUnderMethod.GetParameters()[2].ParameterType;
-                                    var cloneMethodValues = Enum.GetValues(cloneMethodType);
-                                    var defaultCloneMethod = cloneMethodValues.GetValue(0);
+                            var internalTemplate = GetInternalProjectItem(templateNode);
+                            Log($"CreateNode: template={templateNode.GetType().Name}, internalTemplate={internalTemplate?.GetType().Name}");
 
-                                    newNode = cloneUnderMethod.Invoke(templateNode,
-                                        new[] { nodeName ?? $"New{nodeType}", parentItem, defaultCloneMethod });
-                                    if (newNode != null)
+                            if (internalTemplate == null)
+                            {
+                                Log($"CreateNode: GetInternalProjectItem returned null for template");
+                            }
+                            else
+                            {
+                                var cloneUnderMethod = internalTemplate.GetType().GetMethod("CloneUnder",
+                                    BindingFlags.Public | BindingFlags.Instance);
+                                if (cloneUnderMethod != null)
+                                {
+                                    try
                                     {
-                                        Log($"CreateNode: created via CloneUnder");
+                                        var cloneMethodType = cloneUnderMethod.GetParameters()[2].ParameterType;
+                                        var cloneMethodValues = Enum.GetValues(cloneMethodType);
+                                        var defaultCloneMethod = cloneMethodValues.GetValue(0);
+                                        var cloneParent = internalParent ?? parentItem;
+
+                                        newNode = cloneUnderMethod.Invoke(internalTemplate,
+                                            new[] { nodeName ?? $"New{nodeType}", cloneParent, defaultCloneMethod });
+                                        if (newNode != null)
+                                        {
+                                            Log($"CreateNode: created via CloneUnder");
+                                        }
+                                    }
+                                    catch (Exception ex)
+                                    {
+                                        Log($"CreateNode: CloneUnder invoke failed: {ex.Message}");
+                                        if (ex.InnerException != null)
+                                            Log($"CreateNode: CloneUnder InnerException: {ex.InnerException.Message}");
                                     }
                                 }
-                                catch (Exception ex)
+                                else
                                 {
-                                    Log($"CreateNode: CloneUnder invoke failed: {ex.Message}");
+                                    Log($"CreateNode: CloneUnder method not found on {internalTemplate.GetType().Name}");
                                 }
                             }
                         }
@@ -4801,64 +4907,69 @@ namespace KanziMcpPlugin.Services
                     }
                 }
 
-                // Strategy 8: ExecutePluginCommand if available
-                if (newNode == null)
+                // Strategy 8: ExecutePluginCommand on KanziStudio
+                if (newNode == null && _studio != null)
                 {
                     try
                     {
                         Log($"CreateNode: trying ExecutePluginCommand strategy...");
 
-                        // Map node type to command name
                         string? commandName = nodeType switch
                         {
-                            "EmptyNode2D" => "CreateEmptyNode2D",
-                            "EmptyNode3D" => "CreateEmptyNode3D",
-                            "TextBlock2D" => "CreateTextBlock2D",
-                            "RectangleNode2D" => "CreateRectangleNode2D",
-                            "Image2D" => "CreateImage2D",
+                            "EmptyNode2D" or "Empty Node 2D" => "CreateEmptyNode2D",
+                            "EmptyNode3D" or "Empty Node 3D" => "CreateEmptyNode3D",
+                            "TextBlock2D" or "Text Block 2D" => "CreateTextBlock2D",
+                            "RectangleNode2D" or "Rectangle Node 2D" => "CreateRectangleNode2D",
+                            "Image2D" or "Image 2D" => "CreateImage2D",
                             _ => null
                         };
 
                         if (commandName != null)
                         {
-                            // Try to execute command on the parent
-                            var execMethod = parentItem.GetType().GetMethod("ExecutePluginCommand",
-                                BindingFlags.Public | BindingFlags.Instance,
-                                null, new[] { typeof(string), typeof(IEnumerable<ProjectItem>) }, null);
+                            // Build items list: parentItem IS PluginInterface.ProjectItem
+                            var listType = typeof(List<>).MakeGenericType(parentItem.GetType());
+                            var itemsList = (System.Collections.IList)Activator.CreateInstance(listType);
+                            itemsList.Add(parentItem);
 
-                            if (execMethod != null)
+                            // Try _studio first (KanziStudio has ExecutePluginCommand)
+                            foreach (var target in new[] { _studio, project, parentItem })
                             {
+                                // GetMethod is ambiguous (2 overloads), must filter by param type
+                                MethodInfo? targetExec = null;
+                                foreach (var m in target.GetType().GetMethods(BindingFlags.Public | BindingFlags.Instance | BindingFlags.FlattenHierarchy))
+                                {
+                                    if (m.Name != "ExecutePluginCommand") continue;
+                                    var p = m.GetParameters();
+                                    if (p.Length == 2 && p[0].ParameterType == typeof(string))
+                                    { targetExec = m; break; }
+                                }
+
+                                if (targetExec == null)
+                                {
+                                    Log($"CreateNode: no ExecutePluginCommand(string, IEnumerable) on {target.GetType().Name}");
+                                    continue;
+                                }
+
                                 try
                                 {
-                                    var parentItems = new List<ProjectItem> { (ProjectItem)parentItem };
-                                    execMethod.Invoke(parentItem, new object[] { commandName, parentItems });
+                                    Log($"CreateNode: ExecutePluginCommand on {target.GetType().Name} with {commandName}");
+                                    targetExec.Invoke(target, new object[] { commandName, itemsList });
                                     Log($"CreateNode: ExecutePluginCommand executed: {commandName}");
-                                    // Note: This might not return the new node, but could succeed
-                                }
-                                catch (Exception ex)
-                                {
-                                    Log($"CreateNode: ExecutePluginCommand failed: {ex.Message}");
-                                }
-                            }
 
-                            // Also try on project level
-                            var projExecMethod = project.GetType().GetMethod("ExecutePluginCommand",
-                                BindingFlags.Public | BindingFlags.Instance);
-                            if (projExecMethod != null)
-                            {
-                                try
-                                {
-                                    var parameters = projExecMethod.GetParameters();
-                                    if (parameters.Length >= 2)
+                                    var childName = nodeName ?? $"New{nodeType}";
+                                    var children = GetChildren(parentItem);
+                                    newNode = children.FirstOrDefault(c =>
                                     {
-                                        var parentItems = new List<ProjectItem> { (ProjectItem)parentItem };
-                                        projExecMethod.Invoke(project, new object[] { commandName, parentItems });
-                                        Log($"CreateNode: Project.ExecutePluginCommand executed: {commandName}");
-                                    }
+                                        var n = GetItemName(c);
+                                        return n == childName || n.Contains(nodeType) || n.Contains(normalizedType);
+                                    });
+                                    if (newNode != null) { Log($"CreateNode: found new node after ExecutePluginCommand: {GetItemName(newNode)}"); break; }
                                 }
                                 catch (Exception ex)
                                 {
-                                    Log($"CreateNode: Project.ExecutePluginCommand failed: {ex.Message}");
+                                    Log($"CreateNode: ExecutePluginCommand on {target.GetType().Name} failed: {ex.Message}");
+                                    if (ex.InnerException != null)
+                                        Log($"CreateNode: ExecutePluginCommand InnerException: {ex.InnerException.Message}");
                                 }
                             }
                         }
@@ -5089,6 +5200,78 @@ namespace KanziMcpPlugin.Services
                 Log($"DeleteNode failed: {ex.Message}");
                 return ErrorJson($"删除节点失败: {ex.Message}");
             }
+        }
+
+        /// <summary>
+        /// 规范化节点类型名称 — "EmptyNode2D" vs "Empty Node 2D"
+        /// </summary>
+        private static string NormalizeNodeTypeName(string typeName)
+        {
+            if (string.IsNullOrEmpty(typeName)) return typeName;
+            return typeName.Replace(" ", "");
+        }
+
+        /// <summary>
+        /// 将 PluginInterface.ProjectItem 转换为内部类型。
+        /// PluginWrapper 有多个同名 WrappedItem（泛型接口），GetProperty 会歧义，
+        /// 必须用 GetProperties 逐个找。回退到全程序集扫描 GetProjectItemFor 静态方法。
+        /// </summary>
+        private object? GetInternalProjectItem(object? pluginItem)
+        {
+            if (pluginItem == null) return null;
+            try
+            {
+                var typeName = pluginItem.GetType().Name;
+                if (SafeGetProperty(pluginItem, "HasPluginWrapper") as bool? == true)
+                    return pluginItem;
+
+                // 策略1: GetProperties 逐个找 WrappedItem（避开同名歧义）
+                foreach (var prop in pluginItem.GetType().GetProperties(
+                    BindingFlags.Public | BindingFlags.Instance | BindingFlags.FlattenHierarchy))
+                {
+                    if (prop.Name != "WrappedItem") continue;
+                    try
+                    {
+                        var val = prop.GetValue(pluginItem);
+                        if (val != null && val != pluginItem && val.GetType() != pluginItem.GetType())
+                        {
+                            Log($"GetInternalProjectItem: WrappedItem {typeName} -> {val.GetType().Name}");
+                            return val;
+                        }
+                    }
+                    catch { }
+                }
+
+                // 策略2: 全程序集扫描 GetProjectItemFor / GetPluginWrapperFor 静态方法
+                foreach (var assembly in AppDomain.CurrentDomain.GetAssemblies())
+                {
+                    try
+                    {
+                        foreach (var t in assembly.GetTypes())
+                        {
+                            foreach (var m in t.GetMethods(BindingFlags.Public | BindingFlags.Static))
+                            {
+                                if ((m.Name != "GetProjectItemFor" && m.Name != "GetPluginWrapperFor") ||
+                                    m.GetParameters().Length != 1) continue;
+                                try
+                                {
+                                    var result = m.Invoke(null, new object[] { pluginItem });
+                                    if (result != null && result != pluginItem && result.GetType() != pluginItem.GetType())
+                                    {
+                                        Log($"GetInternalProjectItem: {m.DeclaringType!.Name}.{m.Name} {typeName} -> {result.GetType().Name}");
+                                        return result;
+                                    }
+                                }
+                                catch { }
+                            }
+                        }
+                    }
+                    catch { }
+                }
+            }
+            catch (Exception ex) { Log($"GetInternalProjectItem error: {ex.Message}"); }
+            Log($"GetInternalProjectItem: could not convert {pluginItem.GetType().Name}");
+            return pluginItem;
         }
 
         /// <summary>

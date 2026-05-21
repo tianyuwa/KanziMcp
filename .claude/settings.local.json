@@ -4,7 +4,28 @@
       "Bash(cmd /c publish.bat)",
       "Bash(C:/Users/WTY/AppData/Local/Programs/Python/Python312/python.exe -m PyInstaller main.spec --distpath dist --workpath build)",
       "Bash(C:/Users/WTY/WorkBuddy/ossutil-v1.7.19-windows-amd64/ossutil64.exe cp *)",
-      "Bash(C:/Users/WTY/WorkBuddy/ossutil-v1.7.19-windows-amd64/ossutil64.exe ls *)"
+      "Bash(C:/Users/WTY/WorkBuddy/ossutil-v1.7.19-windows-amd64/ossutil64.exe ls *)",
+      "Bash(dotnet build *)",
+      "Read(//c/temp/**)",
+      "Bash(grep -v \"^$\")",
+      "WebFetch(domain:mcpkanzipublish.oss-cn-hangzhou.aliyuncs.com)",
+      "WebFetch(domain:mcpkanzipublish.oss-accelerate.aliyuncs.com)",
+      "Bash(where ossutil *)",
+      "Bash(curl *)",
+      "Bash(env)",
+      "WebFetch(domain:mcpkanzipublish.oss-cn-shanghai.aliyuncs.com)",
+      "Bash(ossutil ls *)",
+      "Bash(ossutil64 ls *)",
+      "Bash(pip install *)",
+      "Bash(python3 -c ' *)",
+      "Bash(python -c ' *)",
+      "Bash(dotnet tool *)",
+      "Bash(cp src/KanziMcpPlugin/Services/KanziService.cs /c/temp/KanziService_backup.cs)",
+      "Bash(git checkout *)",
+      "Bash(cp \"/c/Users/WTY/WorkBuddy/kanziMcpServer/src/KanziMcpPlugin/bin/Release/net48/PluginKanziMCP.dll\" \"/c/ProgramData/Rightware/Kanzi 3.9.10/plugins/PluginKanziMCP.dll\")",
+      "Read(//c/ProgramData/Rightware/Kanzi 3.9.10/plugins/**)",
+      "Read(//c/ProgramData/**)",
+      "Read(//c/Program Files/**)"
     ]
   }
 }
