@@ -26,7 +26,10 @@
       "Read(//c/ProgramData/Rightware/Kanzi 3.9.10/plugins/**)",
       "Read(//c/ProgramData/**)",
       "Read(//c/Program Files/**)",
-      "Bash(npx cursor-claude-setup-2025 *)"
+      "Bash(npx cursor-claude-setup-2025 *)",
+      "mcp__serena__find_symbol",
+      "mcp__serena__replace_content",
+      "Read(//c/Users/WTY/WorkBuddy/kanziMcpPlugin/src/KanziMcpPlugin/Services/**)"
     ]
   }
 }

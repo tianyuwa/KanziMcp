@@ -4996,10 +4996,25 @@ namespace KanziMcpPlugin.Services
                 {
                     var actualType = GetItemType(newNode);
                     var actualPath = GetItemPath(newNode);
-                    Log($"CreateNode: type mismatch — requested '{nodeType}', got '{actualType}' at {actualPath}");
-                    return ErrorJson(
-                        $"Created wrong node type: requested '{nodeType}' but got '{actualType}' at '{actualPath}'. " +
-                        $"Ensure a matching template exists (e.g. Prefabs/.../Empty Node 3D for 3D, not Empty Node 2D).");
+
+                    // If wrapper / internal type is correct but TypeDisplayName differs
+                    // (e.g. Kanzi reports "Image" for an Image2D node), treat as success.
+                    // Only reject when the actual wrapper type is genuinely wrong.
+                    var internalTypeName = newNode.GetType().Name;
+                    var logicalType = MapDisplayNameToLogicalType(actualType, internalTypeName);
+                    if (!string.Equals(actualType, logicalType, StringComparison.OrdinalIgnoreCase) &&
+                        IsWrapperDimensionCompatible(nodeType, internalTypeName))
+                    {
+                        Log($"CreateNode: TypeDisplayName mismatch (expected '{nodeType}', got display '{actualType}', " +
+                            $"internal type '{internalTypeName}') — node is correct, proceeding");
+                    }
+                    else
+                    {
+                        Log($"CreateNode: type mismatch — requested '{nodeType}', got '{actualType}' at {actualPath}");
+                        return ErrorJson(
+                            $"Created wrong node type: requested '{nodeType}' but got '{actualType}' at '{actualPath}'. " +
+                            $"Check that the template type matches (e.g. Image2D vs Image3D, or Empty Node 2D vs Empty Node 3D).");
+                    }
                 }
 
                 // Set node name if provided
@@ -5234,7 +5249,7 @@ namespace KanziMcpPlugin.Services
                 ["Empty Node 3D"] = new[] { "Empty Node 3D", "EmptyNode3D", "Node 3D", "Node3D", "3DNode" },
                 ["Text Block 2D"] = new[] { "Text Block 2D", "TextBlock2D", "2DText" },
                 ["Text Block 3D"] = new[] { "Text Block 3D", "TextBlock3D", "3DText" },
-                ["Image 2D"] = new[] { "Image 2D", "Image2D", "2DImage" },
+                ["Image 2D"] = new[] { "Image 2D", "Image2D", "2DImage", "Image" },
                 ["Image 3D"] = new[] { "Image 3D", "Image3D", "3DImage" },
                 ["Rectangle Node 2D"] = new[] { "Rectangle Node 2D", "RectangleNode2D" },
             };
@@ -5283,6 +5298,22 @@ namespace KanziMcpPlugin.Services
                 return w.Contains("2D");
             // 3D：wrapper 不得含 2D（EmptyNode2DPluginWrapper 会被排除）
             return !w.Contains("2D");
+        }
+
+        /// <summary>
+        /// Maps Kanzi Studio TypeDisplayName to MCP logical node type.
+        /// Some Kanzi types use short display names (e.g. "Image" for Image2D nodes),
+        /// which would fail a naive string comparison against the requested type.
+        /// </summary>
+        private static string MapDisplayNameToLogicalType(string displayName, string internalTypeName)
+        {
+            if (string.Equals(displayName, "Image", StringComparison.OrdinalIgnoreCase))
+            {
+                var dim = GetNodeDimension(internalTypeName);
+                if (dim == "2D") return "Image2D";
+                if (dim == "3D") return "Image3D";
+            }
+            return displayName;
         }
 
         private static string? GetExpectedWrapperHint(string nodeType)
@@ -5345,6 +5376,20 @@ namespace KanziMcpPlugin.Services
                     return true;
             }
 
+            // Map Kanzi display name → logical type and re-check against aliases.
+            // e.g. TypeDisplayName "Image" → logical type "Image2D" for Image2D nodes.
+            var logicalType = MapDisplayNameToLogicalType(itemType, node.GetType().Name);
+            if (!string.Equals(itemType, logicalType, StringComparison.OrdinalIgnoreCase))
+            {
+                foreach (var alias in GetNodeTypeAliases(requestedType))
+                {
+                    if (string.Equals(logicalType, alias, StringComparison.OrdinalIgnoreCase) ||
+                        string.Equals(NormalizeNodeTypeName(logicalType), NormalizeNodeTypeName(alias),
+                            StringComparison.OrdinalIgnoreCase))
+                        return true;
+                }
+            }
+
             var wrapperHint = GetExpectedWrapperHint(requestedType);
             if (!string.IsNullOrEmpty(wrapperHint))
             {
@@ -5359,11 +5404,27 @@ namespace KanziMcpPlugin.Services
             return false;
         }
 
-        /// <summary>创建结果类型是否与请求一致（防止 CloneUnder 克隆了错误维度的模板）。</summary>
+        /// <summary>
+        /// Validates that the created node type matches the requested type.
+        /// Uses wrapper type + dimension + display-name mapping, not a naive
+        /// TypeDisplayName string comparison, because Kanzi may report
+        /// "Image" as the display name for an Image2D node.
+        /// </summary>
         private bool IsCreatedNodeTypeCompatible(string requestedType, object createdNode)
         {
-            var actualType = GetItemType(createdNode);
-            return MatchesRequestedNodeType(actualType, createdNode, requestedType);
+            // Primary validation: display name against aliases + wrapper/dimension checks
+            if (MatchesRequestedNodeType(GetItemType(createdNode), createdNode, requestedType))
+                return true;
+
+            // Fallback: map display name → logical type (e.g. "Image" → "Image2D")
+            // and re-validate. This handles nodes where CloneUnder succeeded with the
+            // correct wrapper but Kanzi reports a short display name.
+            var displayType = GetItemType(createdNode);
+            var logicalType = MapDisplayNameToLogicalType(displayType, createdNode.GetType().Name);
+            if (!string.Equals(displayType, logicalType, StringComparison.OrdinalIgnoreCase))
+                return MatchesRequestedNodeType(logicalType, createdNode, requestedType);
+
+            return false;
         }
 
         private static bool IsExcludedTemplatePath(string path)
