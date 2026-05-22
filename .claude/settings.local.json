@@ -25,7 +25,8 @@
       "Bash(cp \"/c/Users/WTY/WorkBuddy/kanziMcpServer/src/KanziMcpPlugin/bin/Release/net48/PluginKanziMCP.dll\" \"/c/ProgramData/Rightware/Kanzi 3.9.10/plugins/PluginKanziMCP.dll\")",
       "Read(//c/ProgramData/Rightware/Kanzi 3.9.10/plugins/**)",
       "Read(//c/ProgramData/**)",
-      "Read(//c/Program Files/**)"
+      "Read(//c/Program Files/**)",
+      "Bash(npx cursor-claude-setup-2025 *)"
     ]
   }
 }

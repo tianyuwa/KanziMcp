@@ -4835,26 +4835,24 @@ namespace KanziMcpPlugin.Services
                             templateNode = GetProjectItem(templatePath);
                         }
 
-                        // If no template found, try to find any node of the same type
+                        // Prefer user Prefabs / parent subtree; avoid Isolation and MCP Test_* clones
                         if (templateNode == null)
                         {
-                            var templateList = new List<(string path, object node, string nodeType)>();
-                            var templateFilter = new NodeFilter
-                            {
-                                Type = nodeType,
-                                Recursive = true,
-                                Limit = 1
-                            };
                             try
                             {
-                                CollectMatchingNodes(project, "", templateFilter, templateList, 0);
-                                if (templateList.Count > 0)
+                                var (bestTemplate, bestPath) = FindBestTemplateNode(project, parentPath, nodeType);
+                                if (bestTemplate != null)
                                 {
-                                    templateNode = templateList[0].node;
-                                    Log($"CreateNode: found template node: {templateList[0].path}");
+                                    templateNode = bestTemplate;
+                                    Log($"CreateNode: found template node: {bestPath} (score-based selection)");
                                 }
+                                else
+                                    Log($"CreateNode: no template found for type '{nodeType}' (aliases: {string.Join(", ", GetNodeTypeAliases(nodeType).Take(6))})");
                             }
-                            catch { }
+                            catch (Exception ex)
+                            {
+                                Log($"CreateNode: template search failed: {ex.Message}");
+                            }
                         }
 
                         // If we have a template node, try CloneUnder on internal type
@@ -4916,60 +4914,68 @@ namespace KanziMcpPlugin.Services
 
                         string? commandName = nodeType switch
                         {
-                            "EmptyNode2D" or "Empty Node 2D" => "CreateEmptyNode2D",
-                            "EmptyNode3D" or "Empty Node 3D" => "CreateEmptyNode3D",
-                            "TextBlock2D" or "Text Block 2D" => "CreateTextBlock2D",
+                            "EmptyNode2D" or "Empty Node 2D" or "Node2D" or "Node 2D" or "2DNode" => "CreateEmptyNode2D",
+                            "EmptyNode3D" or "Empty Node 3D" or "Node3D" or "Node 3D" or "3DNode" => "CreateEmptyNode3D",
+                            "TextBlock2D" or "Text Block 2D" or "2DText" => "CreateTextBlock2D",
                             "RectangleNode2D" or "Rectangle Node 2D" => "CreateRectangleNode2D",
-                            "Image2D" or "Image 2D" => "CreateImage2D",
+                            "Image2D" or "Image 2D" or "2DImage" => "CreateImage2D",
                             _ => null
                         };
 
                         if (commandName != null)
                         {
-                            // Build items list: parentItem IS PluginInterface.ProjectItem
-                            var listType = typeof(List<>).MakeGenericType(parentItem.GetType());
-                            var itemsList = (System.Collections.IList)Activator.CreateInstance(listType);
-                            itemsList.Add(parentItem);
-
-                            // Try _studio first (KanziStudio has ExecutePluginCommand)
-                            foreach (var target in new[] { _studio, project, parentItem })
+                            if (TryExecuteKanziPluginCommand(commandName, parentItem, nodeType, nodeName, out var cmdNode))
                             {
-                                // GetMethod is ambiguous (2 overloads), must filter by param type
-                                MethodInfo? targetExec = null;
-                                foreach (var m in target.GetType().GetMethods(BindingFlags.Public | BindingFlags.Instance | BindingFlags.FlattenHierarchy))
-                                {
-                                    if (m.Name != "ExecutePluginCommand") continue;
-                                    var p = m.GetParameters();
-                                    if (p.Length == 2 && p[0].ParameterType == typeof(string))
-                                    { targetExec = m; break; }
-                                }
+                                newNode = cmdNode;
+                                Log($"CreateNode: created via KanziUIEnvironment plugin command: {commandName}");
+                            }
+                            else
+                            {
+                                // Build items list: parentItem IS PluginInterface.ProjectItem
+                                var listType = typeof(List<>).MakeGenericType(parentItem.GetType());
+                                var itemsList = (System.Collections.IList)Activator.CreateInstance(listType)!;
+                                itemsList.Add(parentItem);
 
-                                if (targetExec == null)
+                                // Try _studio first (KanziStudio has ExecutePluginCommand)
+                                foreach (var target in new[] { _studio, project, parentItem })
                                 {
-                                    Log($"CreateNode: no ExecutePluginCommand(string, IEnumerable) on {target.GetType().Name}");
-                                    continue;
-                                }
-
-                                try
-                                {
-                                    Log($"CreateNode: ExecutePluginCommand on {target.GetType().Name} with {commandName}");
-                                    targetExec.Invoke(target, new object[] { commandName, itemsList });
-                                    Log($"CreateNode: ExecutePluginCommand executed: {commandName}");
-
-                                    var childName = nodeName ?? $"New{nodeType}";
-                                    var children = GetChildren(parentItem);
-                                    newNode = children.FirstOrDefault(c =>
+                                    if (target == null) continue;
+                                    MethodInfo? targetExec = null;
+                                    foreach (var m in target.GetType().GetMethods(BindingFlags.Public | BindingFlags.Instance | BindingFlags.FlattenHierarchy))
                                     {
-                                        var n = GetItemName(c);
-                                        return n == childName || n.Contains(nodeType) || n.Contains(normalizedType);
-                                    });
-                                    if (newNode != null) { Log($"CreateNode: found new node after ExecutePluginCommand: {GetItemName(newNode)}"); break; }
-                                }
-                                catch (Exception ex)
-                                {
-                                    Log($"CreateNode: ExecutePluginCommand on {target.GetType().Name} failed: {ex.Message}");
-                                    if (ex.InnerException != null)
-                                        Log($"CreateNode: ExecutePluginCommand InnerException: {ex.InnerException.Message}");
+                                        if (m.Name != "ExecutePluginCommand") continue;
+                                        var p = m.GetParameters();
+                                        if (p.Length == 2 && p[0].ParameterType == typeof(string))
+                                        { targetExec = m; break; }
+                                    }
+
+                                    if (targetExec == null)
+                                    {
+                                        Log($"CreateNode: no ExecutePluginCommand(string, IEnumerable) on {target.GetType().Name}");
+                                        continue;
+                                    }
+
+                                    try
+                                    {
+                                        Log($"CreateNode: ExecutePluginCommand on {target.GetType().Name} with {commandName}");
+                                        targetExec.Invoke(target, new object[] { commandName, itemsList });
+                                        Log($"CreateNode: ExecutePluginCommand executed: {commandName}");
+
+                                        var childName = nodeName ?? $"New{nodeType}";
+                                        var children = GetChildren(parentItem);
+                                        newNode = children.FirstOrDefault(c =>
+                                        {
+                                            var n = GetItemName(c);
+                                            return n == childName || n.Contains(nodeType) || n.Contains(normalizedType);
+                                        });
+                                        if (newNode != null) { Log($"CreateNode: found new node after ExecutePluginCommand: {GetItemName(newNode)}"); break; }
+                                    }
+                                    catch (Exception ex)
+                                    {
+                                        Log($"CreateNode: ExecutePluginCommand on {target.GetType().Name} failed: {ex.Message}");
+                                        if (ex.InnerException != null)
+                                            Log($"CreateNode: ExecutePluginCommand InnerException: {ex.InnerException.Message}");
+                                    }
                                 }
                             }
                         }
@@ -4984,6 +4990,16 @@ namespace KanziMcpPlugin.Services
                 {
                     // Return a clear message about the limitation
                     return ErrorJson($"Cannot create node type '{nodeType}' dynamically. This feature requires using Kanzi Studio UI or a compatible node factory API. Please create the node manually in Kanzi Studio.");
+                }
+
+                if (!IsCreatedNodeTypeCompatible(nodeType, newNode))
+                {
+                    var actualType = GetItemType(newNode);
+                    var actualPath = GetItemPath(newNode);
+                    Log($"CreateNode: type mismatch — requested '{nodeType}', got '{actualType}' at {actualPath}");
+                    return ErrorJson(
+                        $"Created wrong node type: requested '{nodeType}' but got '{actualType}' at '{actualPath}'. " +
+                        $"Ensure a matching template exists (e.g. Prefabs/.../Empty Node 3D for 3D, not Empty Node 2D).");
                 }
 
                 // Set node name if provided
@@ -5209,6 +5225,320 @@ namespace KanziMcpPlugin.Services
         {
             if (string.IsNullOrEmpty(typeName)) return typeName;
             return typeName.Replace(" ", "");
+        }
+
+        private static readonly Dictionary<string, string[]> NodeTypeAliasMap =
+            new(StringComparer.OrdinalIgnoreCase)
+            {
+                ["Empty Node 2D"] = new[] { "Empty Node 2D", "EmptyNode2D", "Node 2D", "Node2D", "2DNode" },
+                ["Empty Node 3D"] = new[] { "Empty Node 3D", "EmptyNode3D", "Node 3D", "Node3D", "3DNode" },
+                ["Text Block 2D"] = new[] { "Text Block 2D", "TextBlock2D", "2DText" },
+                ["Text Block 3D"] = new[] { "Text Block 3D", "TextBlock3D", "3DText" },
+                ["Image 2D"] = new[] { "Image 2D", "Image2D", "2DImage" },
+                ["Image 3D"] = new[] { "Image 3D", "Image3D", "3DImage" },
+                ["Rectangle Node 2D"] = new[] { "Rectangle Node 2D", "RectangleNode2D" },
+            };
+
+        private static IEnumerable<string> GetNodeTypeAliases(string nodeType)
+        {
+            yield return nodeType;
+            if (NodeTypeAliasMap.TryGetValue(nodeType, out var aliases))
+            {
+                foreach (var alias in aliases)
+                    yield return alias;
+            }
+            else
+            {
+                foreach (var entry in NodeTypeAliasMap)
+                {
+                    if (entry.Value.Any(a => string.Equals(a, nodeType, StringComparison.OrdinalIgnoreCase) ||
+                                             string.Equals(NormalizeNodeTypeName(a), NormalizeNodeTypeName(nodeType),
+                                                 StringComparison.OrdinalIgnoreCase)))
+                    {
+                        yield return entry.Key;
+                        foreach (var alias in entry.Value)
+                            yield return alias;
+                    }
+                }
+            }
+        }
+
+        /// <summary>从类型名提取维度：2D / 3D，用于避免 EmptyNode2D 被当成 EmptyNode3D 模板。</summary>
+        private static string? GetNodeDimension(string typeName)
+        {
+            var n = NormalizeNodeTypeName(typeName);
+            if (n.Contains("3D")) return "3D";
+            if (n.Contains("2D")) return "2D";
+            return null;
+        }
+
+        /// <summary>请求维度与 PluginWrapper 是否一致（禁止 3D 请求匹配 *2D* wrapper）。</summary>
+        private static bool IsWrapperDimensionCompatible(string requestedType, string wrapperName)
+        {
+            var reqDim = GetNodeDimension(requestedType);
+            if (reqDim == null) return true;
+
+            var w = NormalizeNodeTypeName(wrapperName);
+            if (reqDim == "2D")
+                return w.Contains("2D");
+            // 3D：wrapper 不得含 2D（EmptyNode2DPluginWrapper 会被排除）
+            return !w.Contains("2D");
+        }
+
+        private static string? GetExpectedWrapperHint(string nodeType)
+        {
+            var n = NormalizeNodeTypeName(nodeType);
+            // 使用完整 PluginWrapper 名，避免 "EmptyNode" 同时命中 2D 与 3D
+            if (n.Contains("EmptyNode") && n.Contains("3D")) return "EmptyNodePluginWrapper";
+            if (n.Contains("EmptyNode") && n.Contains("2D")) return "EmptyNode2DPluginWrapper";
+            if (n.Contains("TextBlock") && n.Contains("3D")) return "TextBlock3DPluginWrapper";
+            if (n.Contains("TextBlock") && n.Contains("2D")) return "TextBlock2DPluginWrapper";
+            if (n.Contains("Image") && n.Contains("3D")) return "Image3DPluginWrapper";
+            if (n.Contains("Image") && n.Contains("2D")) return "Image2DPluginWrapper";
+            if (n.Contains("RectangleNode") || (n.Contains("Rectangle") && n.Contains("2D")))
+                return "RectangleNode2DPluginWrapper";
+            if (n is "Node3D" or "3DNode" || (n.Contains("Node") && n.Contains("3D") && !n.Contains("2D")))
+                return "EmptyNodePluginWrapper";
+            return null;
+        }
+
+        private static bool WrapperMatchesHint(string wrapperName, string wrapperHint)
+        {
+            if (wrapperHint.EndsWith("PluginWrapper", StringComparison.Ordinal))
+                return wrapperName.Equals(wrapperHint, StringComparison.OrdinalIgnoreCase);
+            return wrapperName.Contains(wrapperHint, StringComparison.OrdinalIgnoreCase);
+        }
+
+        private static bool MatchesPluginWrapperType(object node, string requestedType)
+        {
+            var wrapperName = node.GetType().Name;
+            if (!wrapperName.EndsWith("PluginWrapper", StringComparison.Ordinal))
+                return false;
+
+            if (!IsWrapperDimensionCompatible(requestedType, wrapperName))
+                return false;
+
+            var coreType = wrapperName.Substring(0, wrapperName.Length - "PluginWrapper".Length);
+            if (string.Equals(NormalizeNodeTypeName(coreType), NormalizeNodeTypeName(requestedType),
+                    StringComparison.OrdinalIgnoreCase))
+                return true;
+
+            // Empty Node 3D：内部类型名为 EmptyNode（无 3D 后缀）
+            var n = NormalizeNodeTypeName(requestedType);
+            if (n.Contains("EmptyNode") && n.Contains("3D") &&
+                coreType.Equals("EmptyNode", StringComparison.OrdinalIgnoreCase))
+                return true;
+
+            return false;
+        }
+
+        private static bool MatchesRequestedNodeType(string itemType, object node, string requestedType)
+        {
+            if (!IsWrapperDimensionCompatible(requestedType, node.GetType().Name))
+                return false;
+
+            foreach (var alias in GetNodeTypeAliases(requestedType))
+            {
+                if (string.Equals(itemType, alias, StringComparison.OrdinalIgnoreCase) ||
+                    string.Equals(NormalizeNodeTypeName(itemType), NormalizeNodeTypeName(alias),
+                        StringComparison.OrdinalIgnoreCase))
+                    return true;
+            }
+
+            var wrapperHint = GetExpectedWrapperHint(requestedType);
+            if (!string.IsNullOrEmpty(wrapperHint))
+            {
+                var wrapperName = node.GetType().Name;
+                if (WrapperMatchesHint(wrapperName, wrapperHint))
+                    return true;
+            }
+
+            if (MatchesPluginWrapperType(node, requestedType))
+                return true;
+
+            return false;
+        }
+
+        /// <summary>创建结果类型是否与请求一致（防止 CloneUnder 克隆了错误维度的模板）。</summary>
+        private bool IsCreatedNodeTypeCompatible(string requestedType, object createdNode)
+        {
+            var actualType = GetItemType(createdNode);
+            return MatchesRequestedNodeType(actualType, createdNode, requestedType);
+        }
+
+        private static bool IsExcludedTemplatePath(string path)
+        {
+            if (string.IsNullOrEmpty(path)) return true;
+            return path.Contains("<Isolation", StringComparison.OrdinalIgnoreCase) ||
+                   path.Contains("Styles/", StringComparison.OrdinalIgnoreCase) ||
+                   path.Contains("Material Types/", StringComparison.OrdinalIgnoreCase) ||
+                   path.Contains("Object Sources/", StringComparison.OrdinalIgnoreCase);
+        }
+
+        private static bool IsLowQualityTemplateName(string nodeName)
+        {
+            if (string.IsNullOrEmpty(nodeName)) return true;
+            return nodeName.StartsWith("Test_", StringComparison.OrdinalIgnoreCase);
+        }
+
+        private int ScoreTemplateCandidate(string path, object node, string requestedType, string? parentPath)
+        {
+            var score = 0;
+            var nodeName = GetItemName(node);
+
+            if (path.StartsWith("Prefabs/", StringComparison.OrdinalIgnoreCase))
+                score += 200;
+            if (!string.IsNullOrEmpty(parentPath))
+            {
+                if (path.Equals(parentPath, StringComparison.OrdinalIgnoreCase))
+                    score += 150;
+                else if (path.StartsWith(parentPath + "/", StringComparison.OrdinalIgnoreCase))
+                    score += 120;
+            }
+            if (path.StartsWith("Screens/", StringComparison.OrdinalIgnoreCase))
+                score += 40;
+
+            var wrapperHint = GetExpectedWrapperHint(requestedType);
+            if (!string.IsNullOrEmpty(wrapperHint) &&
+                WrapperMatchesHint(node.GetType().Name, wrapperHint))
+                score += 80;
+
+            if (!IsWrapperDimensionCompatible(requestedType, node.GetType().Name))
+                score -= 2000;
+
+            if (IsLowQualityTemplateName(nodeName))
+                score -= 300;
+            if (IsExcludedTemplatePath(path))
+                score -= 1000;
+
+            return score;
+        }
+
+        private (object? node, string? path) FindBestTemplateNode(object project, string? parentPath, string nodeType)
+        {
+            (object node, string path, int score)? best = null;
+
+            void Consider(string path, object node, string type)
+            {
+                if (!MatchesRequestedNodeType(type, node, nodeType))
+                    return;
+                if (IsExcludedTemplatePath(path))
+                    return;
+
+                var score = ScoreTemplateCandidate(path, node, nodeType, parentPath);
+                if (best == null || score > best.Value.score)
+                    best = (node, path, score);
+            }
+
+            void Walk(object parent, string currentPath, int depth)
+            {
+                if (depth > 25) return;
+                foreach (var child in GetChildren(parent))
+                {
+                    if (child == null) continue;
+                    var name = GetItemName(child);
+                    if (string.IsNullOrEmpty(name)) continue;
+                    var path = string.IsNullOrEmpty(currentPath) ? name : $"{currentPath}/{name}";
+                    var type = GetItemType(child);
+                    Consider(path, child, type);
+                    Walk(child, path, depth + 1);
+                }
+            }
+
+            Walk(project, "", 0);
+            return best.HasValue ? (best.Value.node, best.Value.path) : (null, null);
+        }
+
+        private bool TryExecuteKanziPluginCommand(string commandName, object parentItem, string nodeType,
+            string? nodeName, out object? newNode)
+        {
+            newNode = null;
+            try
+            {
+                var envType = FindTypeInAssemblies("KanziUIEnvironment")
+                    ?? FindTypeInAssemblies("Rightware.Kanzi.Tool.Presentation.Application.KanziUIEnvironment");
+                if (envType == null)
+                    return false;
+
+                var getPluginCommand = envType.GetMethod("GetPluginCommand",
+                    BindingFlags.Public | BindingFlags.Static, null, new[] { typeof(string) }, null);
+                if (getPluginCommand == null)
+                    return false;
+
+                object? pluginCommand = null;
+                try
+                {
+                    pluginCommand = getPluginCommand.Invoke(null, new object[] { commandName });
+                }
+                catch { }
+
+                if (pluginCommand == null)
+                {
+                    var getAll = envType.GetMethod("GetPluginCommands", BindingFlags.Public | BindingFlags.Static);
+                    var searchToken = commandName.StartsWith("Create", StringComparison.OrdinalIgnoreCase)
+                        ? commandName.Substring(6)
+                        : commandName;
+                    if (getAll?.Invoke(null, null) is IEnumerable commands)
+                    {
+                        foreach (var cmd in commands)
+                        {
+                            var cmdName = cmd?.GetType().GetProperty("Name")?.GetValue(cmd)?.ToString()
+                                ?? cmd?.GetType().GetProperty("CommandName")?.GetValue(cmd)?.ToString()
+                                ?? cmd?.ToString();
+                            if (cmdName != null &&
+                                (cmdName.Contains(searchToken, StringComparison.OrdinalIgnoreCase) ||
+                                 cmdName.Contains(commandName, StringComparison.OrdinalIgnoreCase)))
+                            {
+                                pluginCommand = cmd;
+                                Log($"TryExecuteKanziPluginCommand: resolved '{commandName}' -> '{cmdName}'");
+                                break;
+                            }
+                        }
+                    }
+                }
+
+                if (pluginCommand == null || _studio == null)
+                    return false;
+
+                var listType = typeof(List<>).MakeGenericType(parentItem.GetType());
+                var itemsList = (System.Collections.IList)Activator.CreateInstance(listType)!;
+                itemsList.Add(parentItem);
+
+                MethodInfo? execByCommand = null;
+                MethodInfo? execByName = null;
+                foreach (var m in _studio.GetType().GetMethods(
+                             BindingFlags.Public | BindingFlags.Instance | BindingFlags.FlattenHierarchy))
+                {
+                    if (m.Name != "ExecutePluginCommand") continue;
+                    var p = m.GetParameters();
+                    if (p.Length != 2) continue;
+                    if (p[0].ParameterType == typeof(string))
+                        execByName = m;
+                    else if (p[0].ParameterType.IsInstanceOfType(pluginCommand) ||
+                             p[0].ParameterType.IsAssignableFrom(pluginCommand.GetType()))
+                        execByCommand = m;
+                }
+
+                if (execByCommand != null)
+                    execByCommand.Invoke(_studio, new[] { pluginCommand, itemsList });
+                else if (execByName != null)
+                    execByName.Invoke(_studio, new object[] { commandName, itemsList });
+                else
+                    return false;
+
+                var childName = nodeName ?? $"New{nodeType}";
+                newNode = GetChildren(parentItem).FirstOrDefault(c =>
+                {
+                    var n = GetItemName(c);
+                    return n == childName || n.Contains(nodeType, StringComparison.OrdinalIgnoreCase);
+                });
+                return newNode != null;
+            }
+            catch (Exception ex)
+            {
+                Log($"TryExecuteKanziPluginCommand({commandName}) failed: {ex.Message}");
+                return false;
+            }
         }
 
         /// <summary>
