@@ -29,7 +29,15 @@
       "Bash(npx cursor-claude-setup-2025 *)",
       "mcp__serena__find_symbol",
       "mcp__serena__replace_content",
-      "Read(//c/Users/WTY/WorkBuddy/kanziMcpPlugin/src/KanziMcpPlugin/Services/**)"
+      "Read(//c/Users/WTY/WorkBuddy/kanziMcpPlugin/src/KanziMcpPlugin/Services/**)",
+      "mcp__kanzi__kanzi_get_node_tree",
+      "mcp__kanzi__kanzi_get_status",
+      "mcp__kanzi__kanzi_list_nodes",
+      "mcp__kanzi__kanzi_search_nodes",
+      "mcp__kanzi__kanzi_get_node_properties",
+      "mcp__kanzi__kanzi_get_property_metadata",
+      "mcp__kanzi__kanzi_set_node_property",
+      "mcp__kanzi__kanzi_delete_node"
     ]
   }
 }
