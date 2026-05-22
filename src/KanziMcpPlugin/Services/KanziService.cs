@@ -6085,7 +6085,8 @@ namespace KanziMcpPlugin.Services
                 var usedResourcePaths = new HashSet<string>();
 
                 // 第一步：收集所有被节点使用的资源路径
-                CollectUsedResources(project, usedResourcePaths, 0);
+                CollectUsedResources(project, usedResourcePaths,
+                    out var scannedNodeCount, out var detectedRefCount, out var sampleReferences);
 
                 // 第二步：查找所有 Image 和 Texture 资源
                 if (checkImages || checkTextures)
@@ -6105,6 +6106,10 @@ namespace KanziMcpPlugin.Services
                     ["unusedImageCount"] = unusedImages.Count,
                     ["unusedTextures"] = unusedTextures,
                     ["unusedTextureCount"] = unusedTextures.Count,
+                    // P3: observability diagnostics
+                    ["scannedNodeCount"] = scannedNodeCount,
+                    ["detectedReferenceCount"] = detectedRefCount,
+                    ["sampleReferences"] = sampleReferences,
                     ["recommendations"] = new List<string>()
                 };
 
@@ -6123,7 +6128,15 @@ namespace KanziMcpPlugin.Services
                     recommendations.Add("All resources are in use. Project looks healthy!");
                 }
 
-                Log($"DoctorResource: found {unusedImages.Count} unused images, {unusedTextures.Count} unused textures");
+                // P3: warn when no references were detected despite having nodes
+                if (detectedRefCount == 0 && scannedNodeCount > 0)
+                {
+                    Log($"DoctorResource: WARNING — scanned {scannedNodeCount} nodes but detected 0 resource references. Results may be unreliable.");
+                    recommendations.Add("No resource references detected during scan. Results may not reflect actual usage — verify manually in Kanzi Studio.");
+                }
+
+                Log($"DoctorResource: scanned {scannedNodeCount} nodes, detected {detectedRefCount} refs, " +
+                    $"{unusedImages.Count} unused images, {unusedTextures.Count} unused textures");
 
                 return SafeSerialize(result);
             }
@@ -6134,35 +6147,55 @@ namespace KanziMcpPlugin.Services
             }
         }
 
-        private void CollectUsedResources(object parent, HashSet<string> usedPaths, int depth)
+        private void CollectUsedResources(object project, HashSet<string> usedPaths,
+            out int scannedNodeCount, out int detectedRefCount, out List<string> sampleReferences)
+        {
+            scannedNodeCount = 0;
+            detectedRefCount = 0;
+            sampleReferences = new List<string>();
+            CollectUsedResourcesRecursive(project, usedPaths, 0,
+                ref scannedNodeCount, ref detectedRefCount, sampleReferences);
+        }
+
+        private void CollectUsedResourcesRecursive(object parent, HashSet<string> usedPaths, int depth,
+            ref int scannedNodeCount, ref int detectedRefCount, List<string> sampleReferences)
         {
             if (depth > 30) return;
-
             try
             {
-                var nodeType = GetItemType(parent);
+                scannedNodeCount++;
 
-                // 检查节点的属性中是否有资源引用
+                // Strategy 1: scan properties for resource references using
+                // Kanzi-aware extraction (KzbUrl, ResourceUrl, NodeReference, etc.)
                 var props = GetItemProperties(parent);
-                foreach (var prop in props)
+                foreach (var kvp in props)
                 {
-                    var value = prop.Value;
-                    if (value != null)
+                    var value = kvp.Value;
+                    if (value == null) continue;
+                    if (value is string s && s == "(unable to read)") continue;
+
+                    var extracted = ExtractResourceReference(value);
+                    if (!string.IsNullOrEmpty(extracted))
                     {
-                        var valueStr = value.ToString() ?? "";
-                        // 检查是否为资源路径
-                        if (valueStr.Contains("Textures/") || valueStr.Contains("Materials/") ||
-                            valueStr.Contains("Images/") || valueStr.Contains("Brushes/"))
+                        var normalized = NormalizeResourcePath(extracted);
+                        if (!string.IsNullOrEmpty(normalized) && usedPaths.Add(normalized))
                         {
-                            usedPaths.Add(valueStr);
+                            detectedRefCount++;
+                            if (sampleReferences.Count < 10)
+                                sampleReferences.Add($"{kvp.Key} → {normalized}");
                         }
                     }
                 }
 
-                // 递归遍历子节点
+                // Strategy 2: check direct C# properties that commonly hold
+                // resource references (Texture, Image, Material, etc. on wrappers)
+                TryExtractDirectRefs(parent, usedPaths, ref detectedRefCount, sampleReferences);
+
+                // Recurse into children
                 foreach (var child in GetChildren(parent))
                 {
-                    CollectUsedResources(child, usedPaths, depth + 1);
+                    CollectUsedResourcesRecursive(child, usedPaths, depth + 1,
+                        ref scannedNodeCount, ref detectedRefCount, sampleReferences);
                 }
             }
             catch { }
@@ -6182,16 +6215,16 @@ namespace KanziMcpPlugin.Services
                     var childPath = GetItemPath(child);
                     var childType = GetItemType(child);
 
-                    // 跳过子文件夹
-                    var children = GetChildren(child);
-                    if (children.Count > 0 && (childType.Contains("Library") || childType.Contains("Folder")))
+                    // Recurse into sub-folders / libraries
+                    if (IsResourceFolder(child, childType))
                     {
                         CollectUnusedResources(child, usedPaths, unusedImages, unusedTextures, depth + 1);
                         continue;
                     }
 
-                    // 检查是否为 Image 或 Texture 类型
-                    var isUsed = usedPaths.Any(p => p.Contains(childName) || p.Contains(childPath));
+                    var normalizedChildPath = NormalizeResourcePath(childPath);
+                    var isUsed = IsResourceUsed(childName, normalizedChildPath, usedPaths);
+
                     var resourceInfo = new Dictionary<string, object>
                     {
                         ["name"] = childName,
@@ -6200,12 +6233,22 @@ namespace KanziMcpPlugin.Services
                         ["isUsed"] = isUsed
                     };
 
-                    if (childType.Contains("Image") || childType.Contains("Single Texture"))
+                    // P2: classify by type — Single Texture / Cubemap Texture go to
+                    // textures, not images. Image file resources (e.g. "Image" type
+                    // without "Texture") go to images. This matches checkImages /
+                    // checkTextures semantics.
+                    if (IsImageResourceType(childType))
                     {
                         if (!isUsed)
                             unusedImages.Add(resourceInfo);
                     }
-                    else if (childType.Contains("Texture") || childType.Contains("Brush"))
+                    else if (IsTextureResourceType(childType))
+                    {
+                        if (!isUsed)
+                            unusedTextures.Add(resourceInfo);
+                    }
+                    // Brushes and Materials that reference textures
+                    else if (childType.Contains("Brush") || childType.Contains("Material"))
                     {
                         if (!isUsed)
                             unusedTextures.Add(resourceInfo);
@@ -6213,6 +6256,175 @@ namespace KanziMcpPlugin.Services
                 }
             }
             catch { }
+        }
+
+        // ── DoctorResource helpers ──────────────────────────────────────────
+
+        /// <summary>
+        /// Extract a resource path from a property value object.
+        /// Kanzi stores references as wrapper objects (ResourceReference, NodeReference,
+        /// DynamicProperty, etc.) whose ToString() rarely contains the raw path.
+        /// We probe known properties (KzbUrl, ResourceUrl, Path, Name) and fall back
+        /// to pattern-matching on the string representation.
+        /// </summary>
+        private string? ExtractResourceReference(object value)
+        {
+            if (value == null) return null;
+
+            // 1. Named URL/path properties on the reference object
+            foreach (var propName in new[] { "KzbUrl", "ResourceUrl", "Url", "Path" })
+            {
+                var s = SafeGetProperty(value, propName) as string;
+                if (!string.IsNullOrEmpty(s) && LooksLikeResourcePath(s))
+                    return s;
+            }
+
+            // 2. Resolve via NodeReference / ReferencedNode → get its path
+            foreach (var refProp in new[] { "Target", "ReferencedNode", "Node" })
+            {
+                var target = SafeGetProperty(value, refProp);
+                if (target != null)
+                {
+                    var targetPath = GetItemPath(target);
+                    if (!string.IsNullOrEmpty(targetPath) && LooksLikeResourcePath(targetPath))
+                        return targetPath;
+                }
+            }
+
+            // 3. Name-based resolution — try to look up in the project tree
+            var name = SafeGetProperty(value, "Name") as string;
+            if (!string.IsNullOrEmpty(name) && LooksLikeResourceName(name))
+            {
+                var item = GetProjectItem(name);
+                if (item != null)
+                {
+                    var path = GetItemPath(item);
+                    if (!string.IsNullOrEmpty(path)) return path;
+                }
+            }
+
+            // 4. Fallback: toString + pattern match
+            var str = value.ToString();
+            if (!string.IsNullOrEmpty(str) && LooksLikeResourcePath(str))
+                return str;
+
+            return null;
+        }
+
+        /// <summary>Check direct C# properties on a node wrapper for resource references
+        /// (e.g. Image2DPluginWrapper.Texture, Material.DiffuseMap).</summary>
+        private void TryExtractDirectRefs(object node, HashSet<string> usedPaths,
+            ref int detectedRefCount, List<string> sampleReferences)
+        {
+            var resourceProps = new[]
+            {
+                "Texture", "Image", "Material", "Brush",
+                "DiffuseMap", "NormalMap", "SpecularMap", "EmissiveMap",
+                "BaseColorTexture", "MetallicRoughnessTexture",
+                "Source", "Target", "Resource"
+            };
+
+            foreach (var propName in resourceProps)
+            {
+                try
+                {
+                    var prop = node.GetType().GetProperty(propName,
+                        BindingFlags.Public | BindingFlags.Instance | BindingFlags.FlattenHierarchy);
+                    if (prop == null) continue;
+
+                    var val = prop.GetValue(node);
+                    if (val == null) continue;
+
+                    var path = ExtractResourceReference(val);
+                    if (!string.IsNullOrEmpty(path))
+                    {
+                        var normalized = NormalizeResourcePath(path);
+                        if (!string.IsNullOrEmpty(normalized) && usedPaths.Add(normalized))
+                        {
+                            detectedRefCount++;
+                            if (sampleReferences.Count < 10)
+                                sampleReferences.Add($"{propName}(direct) → {normalized}");
+                        }
+                    }
+                }
+                catch { }
+            }
+        }
+
+        /// <summary>Normalize a resource path for reliable comparison.</summary>
+        private static string NormalizeResourcePath(string path)
+        {
+            if (string.IsNullOrEmpty(path)) return path;
+            return path.Replace('\\', '/').TrimStart('/').Trim();
+        }
+
+        /// <summary>Quick pre-filter: does this string look like it could be a resource path?</summary>
+        private static bool LooksLikeResourcePath(string value)
+        {
+            if (string.IsNullOrEmpty(value)) return false;
+            return value.Contains("Textures/") || value.Contains("Materials/") ||
+                   value.Contains("Images/") || value.Contains("Brushes/") ||
+                   value.Contains("Prefabs/") || value.Contains("Styles/");
+        }
+
+        /// <summary>Quick pre-filter: does this name look like a standalone resource lookup key?</summary>
+        private static bool LooksLikeResourceName(string name)
+        {
+            if (string.IsNullOrEmpty(name)) return false;
+            return name.Contains('.') || name.Contains('/') || name.Contains('_');
+        }
+
+        /// <summary>Determine whether a resource is referenced by any used path.</summary>
+        private static bool IsResourceUsed(string childName, string normalizedChildPath,
+            HashSet<string> usedPaths)
+        {
+            foreach (var used in usedPaths)
+            {
+                var normalizedUsed = NormalizeResourcePath(used);
+
+                // Exact path match or mutual containment
+                if (string.Equals(normalizedUsed, normalizedChildPath, StringComparison.OrdinalIgnoreCase))
+                    return true;
+                if (normalizedUsed.Contains(normalizedChildPath, StringComparison.OrdinalIgnoreCase) ||
+                    normalizedChildPath.Contains(normalizedUsed, StringComparison.OrdinalIgnoreCase))
+                    return true;
+
+                // Name-only match (last segment of used path vs child name)
+                var usedName = System.IO.Path.GetFileName(normalizedUsed);
+                if (!string.IsNullOrEmpty(usedName) &&
+                    string.Equals(usedName, childName, StringComparison.OrdinalIgnoreCase))
+                    return true;
+            }
+            return false;
+        }
+
+        /// <summary>True when the item is a folder/library that may contain sub-resources.</summary>
+        private static bool IsResourceFolder(object item, string itemType)
+        {
+            if (string.IsNullOrEmpty(itemType)) return false;
+            return itemType.Contains("Library") || itemType.Contains("Folder");
+        }
+
+        /// <summary>
+        /// True when the type represents an image file resource (not a texture).
+        /// "Single Texture", "Cubemap Texture" etc. are textures, not images.
+        /// </summary>
+        private static bool IsImageResourceType(string childType)
+        {
+            if (string.IsNullOrEmpty(childType)) return false;
+            // "Image" but NOT "Single Texture", "Cubemap Texture", "Texture 2D", etc.
+            if (childType.Contains("Texture")) return false;
+            return childType.Contains("Image");
+        }
+
+        /// <summary>
+        /// True when the type represents a texture resource.
+        /// Includes "Single Texture", "Cubemap Texture", "Texture 2D" etc.
+        /// </summary>
+        private static bool IsTextureResourceType(string childType)
+        {
+            if (string.IsNullOrEmpty(childType)) return false;
+            return childType.Contains("Texture");
         }
 
         /// <summary>
