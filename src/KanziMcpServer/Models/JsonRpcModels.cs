@@ -95,7 +95,7 @@ public static class McpConstants
     // Named Pipe 配置
     public const string DefaultPipeName = "KanziMcpPipe";
     public const int PipeConnectTimeout = 5000;   // 5 seconds per attempt (不阻塞测试超时)
-    public const int PipeReadTimeout = 30000;     // 30 seconds for complex queries
+    public const int PipeReadTimeout = 120000;    // 120 seconds for complex reflection-based queries
     public const int PipeMaxRetries = 2;          // Maximum connection retry attempts
 
     // 错误码

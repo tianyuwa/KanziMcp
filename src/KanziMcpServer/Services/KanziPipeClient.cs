@@ -195,57 +195,77 @@ public class KanziPipeClient : IDisposable
         var request = new { method, args };
         var requestJson = JsonSerializer.Serialize(request, _jsonOptions);
 
-        try
+        int maxRetries = 2;  // 额外重试次数，总计最多 3 次尝试
+        for (int attempt = 0; attempt <= maxRetries; attempt++)
         {
-            Console.Error.WriteLine($"[KanziPipeClient] Sending: {requestJson}");
-            await _writer!.WriteLineAsync(requestJson);
-            await _writer.FlushAsync();
-            Console.Error.WriteLine($"[KanziPipeClient] Sent, waiting for response (timeout: {_readTimeout}ms)...");
-
-            // 读取响应
-            using var cts = new CancellationTokenSource(_readTimeout);
-            var responseJson = await _reader!.ReadLineAsync(cts.Token);
-
-            Console.Error.WriteLine($"[KanziPipeClient] Received: {(responseJson != null ? responseJson.Substring(0, Math.Min(200, responseJson.Length)) : "null")}");
-
-            if (string.IsNullOrEmpty(responseJson))
+            try
             {
-                // 连接已断开，标记断开并尝试重连
-                Console.Error.WriteLine("[KanziPipeClient] Connection closed, will reconnect and retry");
-                Disconnect();
-                var reconnected = await ConnectAsync();
-                if (reconnected)
+                if (attempt > 0)
                 {
-                    Console.Error.WriteLine("[KanziPipeClient] Reconnected, retrying request");
-                    await _writer!.WriteLineAsync(requestJson);
-                    await _writer.FlushAsync();
-                    using var retryCts = new CancellationTokenSource(_readTimeout);
-                    responseJson = await _reader!.ReadLineAsync(retryCts.Token);
-                    if (string.IsNullOrEmpty(responseJson))
-                        throw new InvalidOperationException("Connection closed after reconnect");
+                    Console.Error.WriteLine($"[KanziPipeClient] Retry attempt {attempt}/{maxRetries}...");
+                }
+
+                Console.Error.WriteLine($"[KanziPipeClient] Sending: {requestJson}");
+                await _writer!.WriteLineAsync(requestJson);
+                await _writer.FlushAsync();
+                Console.Error.WriteLine($"[KanziPipeClient] Sent, waiting for response (timeout: {_readTimeout}ms)...");
+
+                using var cts = new CancellationTokenSource(_readTimeout);
+                var responseJson = await _reader!.ReadLineAsync(cts.Token);
+
+                Console.Error.WriteLine($"[KanziPipeClient] Received: {(responseJson != null ? responseJson.Substring(0, Math.Min(200, responseJson.Length)) : "null")}");
+
+                if (string.IsNullOrEmpty(responseJson))
+                {
+                    Console.Error.WriteLine("[KanziPipeClient] Connection closed, will reconnect and retry");
+                    Disconnect();
+                    var reconnected = await ConnectAsync();
+                    if (reconnected)
+                    {
+                        Console.Error.WriteLine("[KanziPipeClient] Reconnected, retrying request");
+                        await _writer!.WriteLineAsync(requestJson);
+                        await _writer.FlushAsync();
+                        using var retryCts = new CancellationTokenSource(_readTimeout);
+                        responseJson = await _reader!.ReadLineAsync(retryCts.Token);
+                        if (string.IsNullOrEmpty(responseJson))
+                            throw new InvalidOperationException("Connection closed after reconnect");
+                    }
+                    else
+                    {
+                        throw new InvalidOperationException("Connection lost, reconnect failed");
+                    }
+                }
+
+                return ParseResponse<T>(responseJson);
+            }
+            catch (OperationCanceledException)
+            {
+                Console.Error.WriteLine($"[KanziPipeClient] Timeout after {_readTimeout}ms (attempt {attempt + 1}/{maxRetries + 1}), disconnecting");
+                Disconnect();
+
+                if (attempt < maxRetries)
+                {
+                    var delayMs = 2000 * (attempt + 1);  // 指数退避: 2s, 4s
+                    Console.Error.WriteLine($"[KanziPipeClient] Retrying after {delayMs}ms...");
+                    await Task.Delay(delayMs);
+                    var reconnected = await ConnectAsync();
+                    if (!reconnected)
+                        throw new TimeoutException($"Request timeout ({_readTimeout}ms) and reconnect failed. Ensure Kanzi Studio is running.");
                 }
                 else
                 {
-                    throw new InvalidOperationException("Connection lost, reconnect failed");
+                    throw new TimeoutException($"Request timeout after {maxRetries + 1} attempts ({_readTimeout}ms each). Ensure Kanzi Studio has loaded MCP plugin and plugin is running.");
                 }
             }
+            catch (IOException ex)
+            {
+                Console.Error.WriteLine($"[KanziPipeClient] I/O error: {ex.Message}, disconnecting");
+                Disconnect();
+                throw new InvalidOperationException($"TCP I/O error: {ex.Message}");
+            }
+        }
 
-            // 解析响应
-            return ParseResponse<T>(responseJson);
-        }
-        catch (OperationCanceledException)
-        {
-            // 超时：断开旧连接
-            Console.Error.WriteLine($"[KanziPipeClient] Timeout after {_readTimeout}ms, disconnecting");
-            Disconnect();
-            throw new TimeoutException($"Request timeout ({_readTimeout}ms). Ensure Kanzi Studio has loaded MCP plugin and plugin is running.");
-        }
-        catch (IOException ex)
-        {
-            Console.Error.WriteLine($"[KanziPipeClient] I/O error: {ex.Message}, disconnecting");
-            Disconnect();
-            throw new InvalidOperationException($"TCP I/O error: {ex.Message}");
-        }
+        throw new InvalidOperationException("Unreachable");
     }
 
     /// <summary>

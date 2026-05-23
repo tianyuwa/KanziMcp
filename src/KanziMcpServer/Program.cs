@@ -13,6 +13,7 @@
 //   - 也可独立运行：KanziMcpServer.exe --verbose
 // 依赖: McpProtocolHandler, ToolHandler, KanziPipeClient
 
+using System.Diagnostics;
 using System.Text.Json;
 using KanziMcpServer.Handlers;
 using KanziMcpServer.Models;
@@ -94,8 +95,13 @@ class Program
 
                 try
                 {
+                    var sw = Stopwatch.StartNew();
                     var response = await protocolHandler.HandleRequestAsync(line);
+                    sw.Stop();
                     Console.WriteLine(response);
+
+                    var requestPreview = line.Length <= 80 ? line : line.Substring(0, 80);
+                    Console.Error.WriteLine($"[KanziMcpServer] [{sw.ElapsedMilliseconds}ms] {requestPreview}");
 
                     if (options.Verbose)
                     {

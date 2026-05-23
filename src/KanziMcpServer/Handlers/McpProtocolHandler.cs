@@ -182,13 +182,16 @@ public class McpProtocolHandler
         using var resultDoc = JsonDocument.Parse(resultJson);
         var resultElement = resultDoc.RootElement;
 
+        var isError = resultElement.ValueKind == JsonValueKind.Object
+                      && resultElement.TryGetProperty("error", out _);
+
         return new
         {
             content = new[]
             {
                 new { type = "text", text = resultElement.GetRawText() }
             },
-            isError = false
+            isError
         };
     }
 

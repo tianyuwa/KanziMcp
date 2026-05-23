@@ -195,15 +195,15 @@ namespace KanziMcpPlugin.PipeServer
                 using (var reader = new StreamReader(stream, Encoding.UTF8, false, 1024, leaveOpen: true))
                 using (var writer = new StreamWriter(stream, new UTF8Encoding(false), 1024, leaveOpen: true))
                 {
-                    client.ReceiveTimeout = 60000;
-                    client.SendTimeout = 60000;
+                    client.ReceiveTimeout = 120000;
+                    client.SendTimeout = 120000;
 
                     while (client.Connected && !ct.IsCancellationRequested)
                     {
                         // .NET Framework: ReadLineAsync 不支持 CancellationToken
                         // 使用 Task.Run + Timeout 模拟
                         var readTask = Task.Run(() => reader.ReadLine(), ct);
-                        var timeoutTask = Task.Delay(60000, ct);
+                        var timeoutTask = Task.Delay(120000, ct);
                         
                         var completedTask = await Task.WhenAny(readTask, timeoutTask);
                         if (completedTask == timeoutTask)

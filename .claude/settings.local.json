@@ -37,7 +37,16 @@
       "mcp__kanzi__kanzi_get_node_properties",
       "mcp__kanzi__kanzi_get_property_metadata",
       "mcp__kanzi__kanzi_set_node_property",
-      "mcp__kanzi__kanzi_delete_node"
+      "mcp__kanzi__kanzi_delete_node",
+      "Bash(git -C \"c:/Users/WTY/WorkBuddy/kanziMcpServer\" log --oneline -10)",
+      "Bash(tasklist)",
+      "mcp__kanzi__kanzi_list_node_types",
+      "mcp__kanzi__kanzi_create_node",
+      "Bash(ls \"E:/wangtianyu/localization_Test/Image/\" 2>&1 || echo \"Cannot access directly\")",
+      "Read(//e/wangtianyu/localization_Test/**)",
+      "mcp__kanzi__kanzi_import_image",
+      "mcp__kanzi__kanzi_batch_set_property",
+      "mcp__kanzi__kanzi_get_binding_info"
     ]
   }
 }
