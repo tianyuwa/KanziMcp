@@ -58,33 +58,32 @@ SERVER_CAPABILITIES = {
 # 注意：这里只是让 Claude Code 知道有哪些工具可用
 # 实际执行在 Kanzi 电脑上
 TOOLS = [
+    # ========== 查询工具 ==========
     {
-        "name": "kanzi_get_status",
-        "description": "Get Kanzi MCP server status and connection info",
-        "inputSchema": {
-            "type": "object",
-            "properties": {}
-        }
-    },
-    {
-        "name": "kanzi_get_node_tree",
-        "description": "Get the Kanzi project node tree. Optionally filter by root path and depth.",
+        "name": "kanzi_query_nodes",
+        "description": "Query Kanzi nodes by type, name, or path. Returns detailed node information including properties if requested.",
         "inputSchema": {
             "type": "object",
             "properties": {
-                "rootPath": {"type": "string", "description": "Starting node path (empty for root)"},
-                "depth": {"type": "integer", "description": "Max depth (default: 3)"}
+                "type": {"type": "string", "description": "Node type filter (e.g. Text Block 2D, Image, TextBlock2D)"},
+                "name": {"type": "string", "description": "Node name filter, supports wildcards (*). Example: '*标题*' matches nodes containing '标题'"},
+                "path": {"type": "string", "description": "Node path prefix. Example: Screens/Screen/RootPage"},
+                "includeProperties": {"type": "boolean", "description": "Include node properties in response", "default": False},
+                "includeBindings": {"type": "boolean", "description": "Include data binding information", "default": False},
+                "recursive": {"type": "boolean", "description": "Search recursively", "default": True},
+                "limit": {"type": "integer", "description": "Maximum number of results", "default": 1000}
             }
         }
     },
     {
-        "name": "kanzi_list_nodes",
-        "description": "List all nodes in the project, optionally filtered by type",
+        "name": "kanzi_get_node_tree",
+        "description": "Get the hierarchical node tree structure starting from a specified root node.",
         "inputSchema": {
             "type": "object",
             "properties": {
-                "type": {"type": "string", "description": "Node type filter (e.g. TextBlock2D, Node2D)"},
-                "recursive": {"type": "boolean", "description": "Search recursively (default: true)"}
+                "rootPath": {"type": "string", "description": "Root node path. Leave empty for project root."},
+                "depth": {"type": "integer", "description": "Maximum depth to traverse", "default": 3},
+                "includeProperties": {"type": "boolean", "description": "Include properties in response", "default": False}
             }
         }
     },
@@ -97,176 +96,198 @@ TOOLS = [
         }
     },
     {
-        "name": "kanzi_search_nodes",
-        "description": "Search nodes by text content in their properties",
+        "name": "kanzi_get_binding_info",
+        "description": "Get detailed data binding information for a specific node.",
         "inputSchema": {
             "type": "object",
             "properties": {
-                "text": {"type": "string", "description": "Text to search for"},
-                "maxResults": {"type": "integer", "description": "Max results (default: 20)"}
-            }
+                "path": {"type": "string", "description": "Full node path (e.g. Screens/Screen/RootPage/Viewport 2D/Text Block 2D)"},
+                "includeMetadata": {"type": "boolean", "description": "Include binding metadata", "default": False}
+            },
+            "required": ["path"]
         }
     },
-    {
-        "name": "kanzi_get_node_properties",
-        "description": "Get all properties of a specific node",
-        "inputSchema": {
-            "type": "object",
-            "properties": {
-                "path": {"type": "string", "description": "Node path (e.g. Screens/Screen/RootPage/Viewport2D)"},
-                "includeMetadata": {"type": "boolean", "description": "Include property metadata"}
-            }
-        }
-    },
+
+    # ========== 属性操作工具 ==========
     {
         "name": "kanzi_set_node_property",
-        "description": "Set a property value on a node. Use mode 'preview' to test without applying.",
+        "description": "Set a single property on a node. Use mode='preview' to check changes before applying.",
         "inputSchema": {
             "type": "object",
             "properties": {
-                "path": {"type": "string", "description": "Node path"},
+                "path": {"type": "string", "description": "Full node path (e.g. Screens/Screen/RootPage/Viewport 2D/Text Block 2D)"},
                 "property": {"type": "string", "description": "Property name (e.g. TextConcept.Text, LayoutHorizontalAlignment)"},
-                "value": {"type": "string", "description": "Property value"},
-                "mode": {"type": "string", "enum": ["preview", "apply"], "description": "preview=test only, apply=commit to project"}
-            }
-        }
-    },
-    {
-        "name": "kanzi_get_binding_info",
-        "description": "Get data binding information for a node",
-        "inputSchema": {
-            "type": "object",
-            "properties": {
-                "path": {"type": "string", "description": "Node path"},
-                "includeMetadata": {"type": "boolean", "description": "Include binding metadata"}
-            }
-        }
-    },
-    {
-        "name": "kanzi_get_property_metadata",
-        "description": "Get property metadata for a specific node type",
-        "inputSchema": {
-            "type": "object",
-            "properties": {
-                "nodeType": {"type": "string", "description": "Node type (e.g. TextBlock2D)"}
-            }
-        }
-    },
-    {
-        "name": "kanzi_create_node",
-        "description": "Create a new node under a parent node",
-        "inputSchema": {
-            "type": "object",
-            "properties": {
-                "parentPath": {"type": "string", "description": "Parent node path"},
-                "nodeType": {"type": "string", "description": "Node type (e.g. Empty Node 2D, Text Block 2D)"},
-                "nodeName": {"type": "string", "description": "Name for the new node"},
-                "properties": {"type": "object", "description": "Initial properties"}
-            }
-        }
-    },
-    {
-        "name": "kanzi_delete_node",
-        "description": "Delete a node from the project",
-        "inputSchema": {
-            "type": "object",
-            "properties": {
-                "path": {"type": "string", "description": "Node path to delete"},
-                "mode": {"type": "string", "enum": ["preview", "apply"], "description": "preview=dry run, apply=actually delete"}
-            }
+                "value": {"type": "object", "description": "Property value — can be a string, number, boolean, color object {r,g,b,a}, or vector object {x,y,z,w}"},
+                "mode": {"type": "string", "description": "'preview' checks without applying, 'apply' makes the change", "default": "preview", "enum": ["preview", "apply"]},
+                "force": {"type": "boolean", "description": "Force set even if read-only", "default": False}
+            },
+            "required": ["path", "property", "value"]
         }
     },
     {
         "name": "kanzi_batch_set_property",
-        "description": "Batch set properties on multiple nodes matching a filter",
+        "description": "Batch set properties on multiple nodes matching a filter. Always preview first!",
         "inputSchema": {
             "type": "object",
             "properties": {
-                "filter": {"type": "object", "description": "Filter: {type, pathPrefix, namePattern}"},
-                "properties": {"type": "object", "description": "Properties to set"},
-                "mode": {"type": "string", "enum": ["preview", "apply"]},
-                "ignoreReadOnly": {"type": "boolean"}
-            }
+                "filter": {"type": "object", "description": "Node filter criteria (e.g. {\"type\": \"Text Block 2D\", \"recursive\": True})"},
+                "properties": {"type": "object", "description": "Properties to set as key-value pairs"},
+                "mode": {"type": "string", "description": "'preview' or 'apply'", "default": "preview", "enum": ["preview", "apply"]},
+                "ignoreReadOnly": {"type": "boolean", "description": "Skip read-only properties", "default": False}
+            },
+            "required": ["filter", "properties"]
         }
     },
     {
+        "name": "kanzi_get_property_metadata",
+        "description": "Get property metadata for a node type (data type, read-only status, default value).",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "nodeType": {"type": "string", "description": "Node type name (e.g. Text Block 2D, Node2D, Image2D)"}
+            },
+            "required": ["nodeType"]
+        }
+    },
+
+    # ========== 审计工具 ==========
+    {
         "name": "kanzi_audit_bindings",
-        "description": "Audit data bindings across the project",
+        "description": "Audit all data bindings in the project. Find missing data sources, orphan bindings, and priority conflicts.",
         "inputSchema": {
             "type": "object",
             "properties": {
                 "path": {"type": "string", "description": "Scope path (empty for full project)"},
-                "checkPriority": {"type": "boolean"},
-                "findOrphans": {"type": "boolean"}
+                "checkPriority": {"type": "boolean", "description": "Check for priority conflicts", "default": True},
+                "findOrphans": {"type": "boolean", "description": "Find orphan bindings", "default": True}
             }
         }
     },
     {
         "name": "kanzi_audit_localization",
-        "description": "Audit localization coverage",
+        "description": "Audit localization coverage. Find missing translations and inconsistent text keys.",
         "inputSchema": {
             "type": "object",
             "properties": {
-                "languages": {"type": "array", "items": {"type": "string"}},
-                "includeUntranslated": {"type": "boolean"}
+                "languages": {"type": "array", "items": {"type": "string"}, "description": "Target languages to check"},
+                "includeUntranslated": {"type": "boolean", "description": "Include untranslated text nodes", "default": True}
             }
         }
     },
     {
         "name": "kanzi_audit_project_structure",
-        "description": "Audit project structure for naming and depth issues",
+        "description": "Audit project structure for naming conventions and organization best practices.",
         "inputSchema": {
             "type": "object",
             "properties": {
-                "namingPattern": {"type": "string"},
-                "checkDepth": {"type": "boolean"},
-                "checkNaming": {"type": "boolean"}
-            }
-        }
-    },
-    {
-        "name": "kanzi_doctor_resource",
-        "description": "Diagnose resource usage (unused images, textures, etc.)",
-        "inputSchema": {
-            "type": "object",
-            "properties": {
-                "checkImages": {"type": "boolean"},
-                "checkTextures": {"type": "boolean"}
+                "namingPattern": {"type": "string", "description": "Regex pattern for naming convention (e.g. '^[A-Z][a-zA-Z0-9 _]*$')"},
+                "checkDepth": {"type": "boolean", "description": "Check for excessively deep nesting", "default": True},
+                "checkNaming": {"type": "boolean", "description": "Check naming conventions", "default": True}
             }
         }
     },
     {
         "name": "kanzi_audit_resource_references",
-        "description": "Audit resource references for broken/unused/orphaned resources",
+        "description": "Audit resource references — find unused, broken, or orphaned resources (images, textures, materials).",
         "inputSchema": {
             "type": "object",
             "properties": {
-                "checkUnused": {"type": "boolean"},
-                "checkBroken": {"type": "boolean"},
-                "checkOrphaned": {"type": "boolean"}
+                "checkUnused": {"type": "boolean", "description": "Find unused resources", "default": True},
+                "checkBroken": {"type": "boolean", "description": "Find broken/missing resource references", "default": True},
+                "checkOrphaned": {"type": "boolean", "description": "Find orphaned resource files", "default": True}
             }
         }
     },
+
+    # ========== 节点创建与删除 ==========
     {
-        "name": "kanzi_import_image",
-        "description": "Import an image file into the Kanzi project",
+        "name": "kanzi_create_node",
+        "description": "Create a new node under a parent node. Use this to add nodes like Empty Node 2D, Text Block 2D, etc.",
         "inputSchema": {
             "type": "object",
             "properties": {
-                "filePath": {"type": "string", "description": "Local file path of the image"},
-                "targetFolder": {"type": "string", "description": "Target folder in project (e.g. Textures)"}
-            }
+                "parentPath": {"type": "string", "description": "Parent node path where the new node will be created"},
+                "nodeType": {"type": "string", "description": "Node type (e.g. Empty Node 2D, Text Block 2D, Text Block 3D, Image2D)"},
+                "nodeName": {"type": "string", "description": "Name for the new node (optional)"},
+                "properties": {"type": "object", "description": "Initial properties to set on the new node (optional)"}
+            },
+            "required": ["parentPath", "nodeType"]
+        }
+    },
+    {
+        "name": "kanzi_delete_node",
+        "description": "Delete a node. Use preview/dry-run mode first to see what will be deleted. CAUTION: This deletes the node and all its children!",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "path": {"type": "string", "description": "Full path of the node to delete"},
+                "mode": {"type": "string", "description": "'preview' or 'dry-run' to see what will be deleted without actually deleting, 'apply' to delete", "default": "apply", "enum": ["preview", "dry-run", "apply"]}
+            },
+            "required": ["path"]
+        }
+    },
+
+    # ========== 资源导入 ==========
+    {
+        "name": "kanzi_import_image",
+        "description": "Import an image file into the Kanzi resource library (Textures folder). Supported formats: PNG, JPG, BMP, etc.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "filePath": {"type": "string", "description": "Full path to the image file on your computer"},
+                "resourceName": {"type": "string", "description": "Optional name for the imported resource"},
+                "targetFolder": {"type": "string", "description": "Target resource folder (default: 'Textures')", "default": "Textures"}
+            },
+            "required": ["filePath"]
         }
     },
     {
         "name": "kanzi_import_fbx",
-        "description": "Import an FBX 3D model file into the Kanzi project",
+        "description": "Import a 3D model (FBX format) into the Kanzi resource library (Meshes folder).",
         "inputSchema": {
             "type": "object",
             "properties": {
-                "filePath": {"type": "string", "description": "Local file path of the FBX model"},
-                "targetFolder": {"type": "string", "description": "Target folder in project (e.g. Models)"}
+                "filePath": {"type": "string", "description": "Full path to the FBX file on your computer"},
+                "resourceName": {"type": "string", "description": "Optional name for the imported resource"},
+                "targetFolder": {"type": "string", "description": "Target resource folder (default: 'Meshes')", "default": "Meshes"}
+            },
+            "required": ["filePath"]
+        }
+    },
+
+    # ========== 资源诊断 ==========
+    {
+        "name": "kanzi_doctor_resource",
+        "description": "Diagnose resource usage in the project. Find unused Image and Texture resources that can be safely removed to reduce project size.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "checkImages": {"type": "boolean", "description": "Check for unused images", "default": True},
+                "checkTextures": {"type": "boolean", "description": "Check for unused textures", "default": True}
             }
+        }
+    },
+
+    # ========== 实用工具 ==========
+    {
+        "name": "kanzi_get_status",
+        "description": "Get MCP server and Kanzi connection status.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {}
+        }
+    },
+    {
+        "name": "kanzi_search_nodes",
+        "description": "Search nodes by name, path, type, or text content. Default searches Name and Path.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "searchText": {"type": "string", "description": "Text to search for in node properties"},
+                "searchIn": {"type": "array", "items": {"type": "string"}, "description": "Properties to search in (default: ['Name', 'Path'], options: 'Name', 'Path', 'Type', 'Text')"},
+                "caseSensitive": {"type": "boolean", "description": "Case sensitive search", "default": False}
+            },
+            "required": ["searchText"]
         }
     }
 ]

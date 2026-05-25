@@ -126,7 +126,7 @@ public class ToolHandler
                 "kanzi_doctor_resource" => await ExecuteDoctorResourceAsync(args),
 
                 // 实用工具
-                "kanzi_status" => await ExecuteGetStatusAsync(),
+                "kanzi_get_status" => await ExecuteGetStatusAsync(),
                 "kanzi_search_nodes" => await ExecuteSearchNodesAsync(args),
 
                 _ => JsonSerializer.Serialize(new { error = $"未知工具: {toolName}" })
@@ -272,7 +272,7 @@ public class ToolHandler
 
     private static ToolDefinition GetGetServerStatusTool() => new()
     {
-        Name = "kanzi_status",
+        Name = "kanzi_get_status",
         Description = "Get MCP server and Kanzi connection status.",
         InputSchema = Schema(Array.Empty<Dictionary<string, object>>())
     };

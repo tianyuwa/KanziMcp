@@ -46,7 +46,9 @@
       "Read(//e/wangtianyu/localization_Test/**)",
       "mcp__kanzi__kanzi_import_image",
       "mcp__kanzi__kanzi_batch_set_property",
-      "mcp__kanzi__kanzi_get_binding_info"
+      "mcp__kanzi__kanzi_get_binding_info",
+      "mcp__kanzi__kanzi_query_nodes",
+      "mcp__kanzi__kanzi_audit_project_structure"
     ]
   }
 }
