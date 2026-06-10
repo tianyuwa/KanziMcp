@@ -1,0 +1,22 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(git -C \"c:/Users/WTY/WorkBuddy/kanziMcpServer\" log --oneline --all -- src/KanziMcpServer/Handlers/ToolHandler.cs)",
+      "Bash(cmd /c \"tasklist | findstr /i kanzi\")",
+      "Bash(cp \"c:/Users/WTY/WorkBuddy/kanziMcpServer/src/KanziMcpPlugin/bin/Release/net48/PluginKanziMCP.dll\" \"/c/ProgramData/Rightware/Kanzi 3.9.10/plugins/PluginKanziMCP.dll\")",
+      "Bash(cmd /c \"copy /Y \\\\\"c:\\\\Users\\\\WTY\\\\WorkBuddy\\\\kanziMcpServer\\\\src\\\\KanziMcpPlugin\\\\bin\\\\Release\\\\net48\\\\PluginKanziMCP.dll\\\\\" \\\\\"C:\\\\ProgramData\\\\Rightware\\\\Kanzi 3.9.10\\\\plugins\\\\PluginKanziMCP.dll\\\\\"\")",
+      "Bash(cmd /c \"dir \\\\\"C:\\\\ProgramData\\\\Rightware\\\\Kanzi 3.9.10\\\\plugins\\\\PluginKanziMCP.dll\\\\\" 2>&1\")",
+      "Bash(powershell -Command 'Get-Process | Where-Object { $_.ProcessName -like '\\\\''*kanzi*'\\\\'' -or $_.ProcessName -like '\\\\''*Kanzi*'\\\\'' } | Select-Object ProcessName, Path')",
+      "Bash(powershell -Command \"Get-Process | Select-Object ProcessName, Id | Sort-Object ProcessName\")",
+      "Bash(powershell -Command 'Get-Process | Where-Object { $_.ProcessName -like '\\\\''*Studio*'\\\\'' } | Select-Object ProcessName, Id')",
+      "Read(//c/Users/WTY/**)",
+      "Bash(powershell -Command \"Get-ChildItem -Path 'C:\\\\Users\\\\WTY\\\\WorkBuddy\\\\kanziMcpServer\\\\Build_MCP' -Recurse -Name\")",
+      "Bash(cmd /c \"copy /Y \\\\\"c:\\\\Users\\\\WTY\\\\WorkBuddy\\\\kanziMcpServer\\\\src\\\\KanziMcpServer\\\\bin\\\\Release\\\\net10.0\\\\KanziMcpServer.dll\\\\\" \\\\\"c:\\\\Users\\\\WTY\\\\WorkBuddy\\\\kanziMcpServer\\\\Build_MCP\\\\KanziMcpServer\\\\KanziMcpServer.dll\\\\\"\")",
+      "Bash(cmd.exe /c publish.bat)",
+      "Bash(cmd.exe /c build_and_upload.bat)"
+    ],
+    "additionalDirectories": [
+      "C:\\ProgramData\\Rightware\\Kanzi 3.9.10\\plugins"
+    ]
+  }
+}
