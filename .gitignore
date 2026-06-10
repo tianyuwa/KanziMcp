@@ -25,7 +25,13 @@ artifacts/
 
 # Build output
 build/
+build_daemon/
+dist/
 output/
+packages/
+src/KanziMcpServer/packages/
+diagnostic_bundle/
+diagnostic_bundle.zip
 *.dll
 *.exe
 *.pdb

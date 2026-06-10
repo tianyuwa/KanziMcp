@@ -48,7 +48,10 @@
       "mcp__kanzi__kanzi_batch_set_property",
       "mcp__kanzi__kanzi_get_binding_info",
       "mcp__kanzi__kanzi_query_nodes",
-      "mcp__kanzi__kanzi_audit_project_structure"
+      "mcp__kanzi__kanzi_audit_project_structure",
+      "mcp__serena__onboarding",
+      "mcp__serena__read_memory",
+      "mcp__serena__write_memory"
     ]
   }
 }

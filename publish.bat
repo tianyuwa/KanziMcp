@@ -1,4 +1,4 @@
-﻿﻿@echo off
+﻿@echo off
 chcp 65001 >nul
 setlocal EnableDelayedExpansion
 
@@ -42,35 +42,49 @@ if not exist "%INTERFACE_SRC%" (
 REM ========================================
 REM [1/6] 清理输出目录
 REM ========================================
-echo [1/6] 清理输出目录...
+echo [1/7] 清理输出目录...
 if exist "%OUTPUT_DIR%" rmdir /S /Q "%OUTPUT_DIR%"
 mkdir "%OUTPUT_DIR%"
 
 REM ========================================
 REM [2/6] 复制对应版本的 PluginInterface.dll
 REM ========================================
-echo [2/6] 复制 PluginInterface.dll (%KANZI_VERSION%)...
+echo [2/7] 复制 PluginInterface.dll (%KANZI_VERSION%)...
 copy /Y "%INTERFACE_SRC%" "%INTERFACE_DST%" >nul
 
 REM ========================================
-REM [3/6] 编译插件（--no-restore 避免 NuGet 路径问题）
+REM [3/6] 还原 NuGet 依赖（清理 obj/ 后必须先 restore）
 REM ========================================
-echo [3/6] 编译 KanziMcpPlugin...
-"C:/Program Files/dotnet/dotnet.exe" build "%PLUGIN_DIR%\KanziMcpPlugin.csproj" -c Release --no-restore
+echo [3/7] 还原项目依赖 (dotnet restore)...
+"C:/Program Files/dotnet/dotnet.exe" restore "%PLUGIN_DIR%\KanziMcpPlugin.csproj"
+if errorlevel 1 (
+    echo [ERROR] 插件 restore 失败！
+    exit /b 1
+)
+"C:/Program Files/dotnet/dotnet.exe" restore "%SERVER_DIR%\KanziMcpServer.csproj"
+if errorlevel 1 (
+    echo [ERROR] Server restore 失败！
+    exit /b 1
+)
+
+REM ========================================
+REM [4/6] 编译插件
+REM ========================================
+echo [4/7] 编译 KanziMcpPlugin...
+"C:/Program Files/dotnet/dotnet.exe" build "%PLUGIN_DIR%\KanziMcpPlugin.csproj" -c Release
 if errorlevel 1 (
     echo [ERROR] 插件编译失败！
     exit /b 1
 )
 
 REM ========================================
-REM [4/6] 发布 MCP Server（自包含，打包 .NET Runtime）
+REM [5/6] 发布 MCP Server（自包含，打包 .NET Runtime）
 REM ========================================
-echo [4/6] 发布 KanziMcpServer（self-contained）...
+echo [5/7] 发布 KanziMcpServer（self-contained）...
 "C:/Program Files/dotnet/dotnet.exe" publish "%SERVER_DIR%\KanziMcpServer.csproj" ^
   -c Release ^
   -r win-x64 ^
   --self-contained true ^
-  --no-restore ^
   -o "%OUTPUT_DIR%\KanziMcpServer"
 if errorlevel 1 (
     echo [ERROR] Server 发布失败！
@@ -78,23 +92,22 @@ if errorlevel 1 (
 )
 
 REM ========================================
-REM [5/6] 打包 main.exe（test_mcp_client.py → dist\main.exe）
+REM [6/7] 打包 main.exe（可选：test_mcp_client.py → dist\main.exe）
 REM ========================================
-echo [5/6] 打包 main.exe（PyInstaller）...
-"C:\Users\WTY\AppData\Local\Programs\Python\Python312\python.exe" -m PyInstaller main.spec --distpath dist --workpath build 2>&1
-if errorlevel 1 (
-    echo [ERROR] main.exe 打包失败！
-    exit /b 1
+echo [6/7] 打包 main.exe（PyInstaller，可选）...
+set PYINSTALLER_OK=0
+if exist "C:\Users\WTY\AppData\Local\Programs\Python\Python312\python.exe" (
+    "C:\Users\WTY\AppData\Local\Programs\Python\Python312\python.exe" -m PyInstaller main.spec --distpath dist --workpath build 2>&1
+    if not errorlevel 1 if exist "%ROOT%dist\main.exe" set PYINSTALLER_OK=1
 )
-if not exist "%ROOT%dist\main.exe" (
-    echo [ERROR] dist\main.exe 不存在，打包可能失败！
-    exit /b 1
+if "%PYINSTALLER_OK%"=="0" (
+    echo [WARN] main.exe 打包跳过（Python/PyInstaller 不可用或失败，不影响 MCP 核心功能）
 )
 
 REM ========================================
-REM [6/6] 组装插件 + 辅助文件到输出目录
+REM [7/7] 组装插件 + 辅助文件到输出目录
 REM ========================================
-echo [6/6] 组装输出目录...
+echo [7/7] 组装输出目录...
 
 mkdir "%OUTPUT_DIR%\KanziMcpPlugin\%KANZI_VERSION%\"
 
