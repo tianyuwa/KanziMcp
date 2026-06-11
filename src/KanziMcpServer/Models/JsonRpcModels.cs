@@ -98,6 +98,24 @@ public static class McpConstants
     public const int PipeReadTimeout = 120000;    // 120 seconds for complex reflection-based queries
     public const int PipeMaxRetries = 2;          // Maximum connection retry attempts
 
+    // State Manager batching / timeouts
+    public const int StateManagerRecommendedBatchSize = 8;
+    public const int StateManagerMinBatchTimeoutMs = 120000;      // 2 min floor per apply batch
+    public const int StateManagerMaxBatchTimeoutMs = 600000;      // 10 min cap per apply batch
+    public const int StateManagerMsPerState = 15000;              // ~15s per state (create + objects + props)
+    public const int StateManagerBatch0OverheadMs = 30000;          // StateManager + StateGroup setup
+    public const int OssMinRequestTimeoutSeconds = 660;             // must exceed StateManagerMaxBatchTimeoutMs
+
+    /// <summary>
+    /// Compute TCP read timeout for one create_state_manager apply batch.
+    /// </summary>
+    public static int ComputeStateManagerReadTimeoutMs(int statesInBatch, int batchIndex)
+    {
+        var overhead = batchIndex == 0 ? StateManagerBatch0OverheadMs : 15000;
+        var ms = overhead + Math.Max(statesInBatch, 1) * StateManagerMsPerState;
+        return Math.Clamp(ms, StateManagerMinBatchTimeoutMs, StateManagerMaxBatchTimeoutMs);
+    }
+
     // 错误码
     public const int ErrorParseError = -32700;
     public const int ErrorInvalidRequest = -32600;

@@ -183,7 +183,7 @@ public class KanziPipeClient : IDisposable
     /// <summary>
     /// 发送请求到 Kanzi 并获取响应
     /// </summary>
-    private async Task<T> SendRequestAsync<T>(string method, object? args = null)
+    private async Task<T> SendRequestAsync<T>(string method, object? args = null, int? readTimeoutMs = null)
     {
         if (!IsConnected)
         {
@@ -194,6 +194,7 @@ public class KanziPipeClient : IDisposable
 
         var request = new { method, args };
         var requestJson = JsonSerializer.Serialize(request, _jsonOptions);
+        var timeoutMs = readTimeoutMs ?? _readTimeout;
 
         int maxRetries = 2;  // 额外重试次数，总计最多 3 次尝试
         for (int attempt = 0; attempt <= maxRetries; attempt++)
@@ -208,9 +209,9 @@ public class KanziPipeClient : IDisposable
                 Console.Error.WriteLine($"[KanziPipeClient] Sending: {requestJson}");
                 await _writer!.WriteLineAsync(requestJson);
                 await _writer.FlushAsync();
-                Console.Error.WriteLine($"[KanziPipeClient] Sent, waiting for response (timeout: {_readTimeout}ms)...");
+                Console.Error.WriteLine($"[KanziPipeClient] Sent, waiting for response (timeout: {timeoutMs}ms)...");
 
-                using var cts = new CancellationTokenSource(_readTimeout);
+                using var cts = new CancellationTokenSource(timeoutMs);
                 var responseJson = await _reader!.ReadLineAsync(cts.Token);
 
                 Console.Error.WriteLine($"[KanziPipeClient] Received: {(responseJson != null ? responseJson.Substring(0, Math.Min(200, responseJson.Length)) : "null")}");
@@ -225,7 +226,7 @@ public class KanziPipeClient : IDisposable
                         Console.Error.WriteLine("[KanziPipeClient] Reconnected, retrying request");
                         await _writer!.WriteLineAsync(requestJson);
                         await _writer.FlushAsync();
-                        using var retryCts = new CancellationTokenSource(_readTimeout);
+                        using var retryCts = new CancellationTokenSource(timeoutMs);
                         responseJson = await _reader!.ReadLineAsync(retryCts.Token);
                         if (string.IsNullOrEmpty(responseJson))
                             throw new InvalidOperationException("Connection closed after reconnect");
@@ -240,7 +241,7 @@ public class KanziPipeClient : IDisposable
             }
             catch (OperationCanceledException)
             {
-                Console.Error.WriteLine($"[KanziPipeClient] Timeout after {_readTimeout}ms (attempt {attempt + 1}/{maxRetries + 1}), disconnecting");
+                Console.Error.WriteLine($"[KanziPipeClient] Timeout after {timeoutMs}ms (attempt {attempt + 1}/{maxRetries + 1}), disconnecting");
                 Disconnect();
 
                 if (attempt < maxRetries)
@@ -250,11 +251,11 @@ public class KanziPipeClient : IDisposable
                     await Task.Delay(delayMs);
                     var reconnected = await ConnectAsync();
                     if (!reconnected)
-                        throw new TimeoutException($"Request timeout ({_readTimeout}ms) and reconnect failed. Ensure Kanzi Studio is running.");
+                        throw new TimeoutException($"Request timeout ({timeoutMs}ms) and reconnect failed. Ensure Kanzi Studio is running.");
                 }
                 else
                 {
-                    throw new TimeoutException($"Request timeout after {maxRetries + 1} attempts ({_readTimeout}ms each). Ensure Kanzi Studio has loaded MCP plugin and plugin is running.");
+                    throw new TimeoutException($"Request timeout after {maxRetries + 1} attempts ({timeoutMs}ms each). Ensure Kanzi Studio has loaded MCP plugin and plugin is running.");
                 }
             }
             catch (IOException ex)
@@ -424,6 +425,55 @@ public class KanziPipeClient : IDisposable
     public async Task<string> DoctorResourceAsync(bool checkImages = true, bool checkTextures = true)
     {
         return await SendRequestAsync<string>("doctor_resource", new { checkImages, checkTextures });
+    }
+
+    #endregion
+
+    #region Custom Enum Property
+
+    /// <summary>
+    /// Create or update a Custom Enum Property
+    /// </summary>
+    public async Task<string> UpsertCustomEnumPropertyAsync(string name, List<Dictionary<string, object>> options,
+        string? displayName = null, string? category = null, string mode = "preview")
+    {
+        return await SendRequestAsync<string>("upsert_custom_enum_property",
+            new { name, options, displayName, category, mode });
+    }
+
+    #endregion
+
+    #region State Manager
+
+    /// <summary>
+    /// Create a State Manager with StateGroup, States, and StateObjects.
+    /// Supports batching for large state counts.
+    /// </summary>
+    public async Task<string> CreateStateManagerAsync(
+        string managerName, string groupName, string groupProperty,
+        List<Dictionary<string, object>> states,
+        string bindNodePath = "",
+        string mode = "preview",
+        bool confirmLargeBatch = false,
+        int batchIndex = 0,
+        int batchSize = McpConstants.StateManagerRecommendedBatchSize,
+        string strategy = "auto",
+        int? readTimeoutMs = null,
+        int totalStateCount = 0)
+    {
+        var payloadCount = states.Count;
+        var partialPayload = totalStateCount > payloadCount
+            || (batchIndex > 0 && batchIndex * batchSize >= payloadCount);
+        var statesInBatch = partialPayload
+            ? payloadCount
+            : Math.Min(batchSize, Math.Max(0, payloadCount - batchIndex * batchSize));
+        var timeoutMs = readTimeoutMs
+            ?? McpConstants.ComputeStateManagerReadTimeoutMs(statesInBatch, batchIndex);
+
+        return await SendRequestAsync<string>("create_state_manager",
+            new { managerName, groupName, groupProperty, states, bindNodePath, mode,
+                  confirmLargeBatch, batchIndex, batchSize, strategy, totalStateCount },
+            timeoutMs);
     }
 
     #endregion

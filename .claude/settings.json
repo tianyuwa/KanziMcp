@@ -13,7 +13,9 @@
       "Bash(powershell -Command \"Get-ChildItem -Path 'C:\\\\Users\\\\WTY\\\\WorkBuddy\\\\kanziMcpServer\\\\Build_MCP' -Recurse -Name\")",
       "Bash(cmd /c \"copy /Y \\\\\"c:\\\\Users\\\\WTY\\\\WorkBuddy\\\\kanziMcpServer\\\\src\\\\KanziMcpServer\\\\bin\\\\Release\\\\net10.0\\\\KanziMcpServer.dll\\\\\" \\\\\"c:\\\\Users\\\\WTY\\\\WorkBuddy\\\\kanziMcpServer\\\\Build_MCP\\\\KanziMcpServer\\\\KanziMcpServer.dll\\\\\"\")",
       "Bash(cmd.exe /c publish.bat)",
-      "Bash(cmd.exe /c build_and_upload.bat)"
+      "Bash(cmd.exe /c build_and_upload.bat)",
+      "mcp__kanzi__kanzi_upsert_custom_enum_property",
+      "mcp__kanzi__kanzi_create_state_manager"
     ],
     "additionalDirectories": [
       "C:\\ProgramData\\Rightware\\Kanzi 3.9.10\\plugins"

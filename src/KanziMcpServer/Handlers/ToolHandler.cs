@@ -81,6 +81,11 @@ public class ToolHandler
 
             GetDoctorResourceTool(),
 
+            // ========== 自定义属性工具 ==========
+
+            GetUpsertCustomEnumPropertyTool(),
+            GetCreateStateManagerTool(),
+
             // ========== 实用工具 ==========
 
             GetGetServerStatusTool(),
@@ -124,6 +129,10 @@ public class ToolHandler
 
                 // 资源诊断
                 "kanzi_doctor_resource" => await ExecuteDoctorResourceAsync(args),
+
+                // 自定义属性
+                "kanzi_upsert_custom_enum_property" => await ExecuteUpsertCustomEnumPropertyAsync(args),
+                "kanzi_create_state_manager" => await ExecuteCreateStateManagerAsync(args),
 
                 // 实用工具
                 "kanzi_get_status" => await ExecuteGetStatusAsync(),
@@ -346,6 +355,48 @@ public class ToolHandler
             Prop("checkImages", "boolean", "Check for unused images", defaultValue: true),
             Prop("checkTextures", "boolean", "Check for unused textures", defaultValue: true),
         })
+    };
+
+    private static ToolDefinition GetUpsertCustomEnumPropertyTool() => new()
+    {
+        Name = "kanzi_upsert_custom_enum_property",
+        Description = "Create or update a Custom Enum Property in the project. If a property with the same name already exists and is a CustomEnumProperty, it updates the options/displayName/category. If it exists but is a different type, it deletes and recreates. If it does not exist, it creates a new one.",
+        InputSchema = Schema(new[]
+        {
+            Prop("name", "string", "Property name (e.g., 'WarningValue', 'PopState')"),
+            Prop("options", "array", "Array of { name: string, value: int } objects defining the enum options"),
+            Prop("displayName", "string", "Display name for the property (default: '<Name>-name')"),
+            Prop("category", "string", "Category for the property (default: '')"),
+            Prop("mode", "string", "'preview' checks without applying, 'apply' makes the change", defaultValue: "preview", enumValues: new[] { "preview", "apply" }),
+        }, required: new[] { "name", "options" })
+    };
+
+    private static ToolDefinition GetCreateStateManagerTool() => new()
+    {
+        Name = "kanzi_create_state_manager",
+        Description = @"Create a State Manager with StateGroup, States, and StateObjects. Supports batched creation for large state counts.
+
+Usage order:
+1. First call kanzi_upsert_custom_enum_property to ensure the groupProperty exists
+2. Then call kanzi_create_state_manager with mode=preview to see the batch plan
+3. If stateCount >= 9, use batchSize=8 and loop batchIndex=0..totalBatches-1 with mode=apply (send FULL states array each call)
+4. Alternative: send only each batch's states with totalStateCount set to the full count
+5. If stateCount > 200, must set confirmLargeBatch=true
+6. Not recommended to exceed 500 states per group; split into multiple StateGroups instead",
+        InputSchema = Schema(new[]
+        {
+            Prop("managerName", "string", "Name of the State Manager"),
+            Prop("groupName", "string", "Name of the State Group"),
+            Prop("groupProperty", "string", "Property name for the group controller (must be a CustomEnumProperty)"),
+            Prop("states", "array", "Array of state definitions. Each state: { stateName, statePropertyValue, objects: [{ nodeName, nodePath, properties: { key: value } }] }"),
+            Prop("bindNodePath", "string", "Path of the node to bind the StateManager to (e.g., 'Screens/Screen/RootPage/Viewport')"),
+            Prop("mode", "string", "'preview' or 'apply'", defaultValue: "preview", enumValues: new[] { "preview", "apply" }),
+            Prop("confirmLargeBatch", "boolean", "Required true when stateCount > 200", defaultValue: false),
+            Prop("batchIndex", "integer", "Batch index for incremental apply (0-based)", defaultValue: 0),
+            Prop("batchSize", "integer", "Number of states per batch (max 100; use 8 when stateCount >= 9)", defaultValue: 8),
+            Prop("totalStateCount", "integer", "Total states across all batches when sending per-batch state subsets (optional)", defaultValue: 0),
+            Prop("strategy", "string", "Creation strategy: 'auto', 'clone', or 'direct'", defaultValue: "auto", enumValues: new[] { "auto", "clone", "direct" }),
+        }, required: new[] { "managerName", "groupName", "groupProperty", "states" })
     };
 
     #endregion
@@ -572,6 +623,129 @@ public class ToolHandler
         var checkTextures = !args.TryGetProperty("checkTextures", out var ct) || ct.GetBoolean();
 
         return await _pipeClient.DoctorResourceAsync(checkImages, checkTextures);
+    }
+
+    private async Task<string> ExecuteUpsertCustomEnumPropertyAsync(JsonElement args)
+    {
+        var name = args.TryGetProperty("name", out var n) ? n.GetString() ?? "" : "";
+        var displayName = args.TryGetProperty("displayName", out var dn) ? dn.GetString() : null;
+        var category = args.TryGetProperty("category", out var cat) ? cat.GetString() : null;
+        var mode = args.TryGetProperty("mode", out var m) ? m.GetString() ?? "preview" : "preview";
+
+        var options = new List<Dictionary<string, object>>();
+        if (args.TryGetProperty("options", out var optsEl) && optsEl.ValueKind == JsonValueKind.Array)
+        {
+            foreach (var opt in optsEl.EnumerateArray())
+            {
+                var optDict = new Dictionary<string, object>();
+                if (opt.TryGetProperty("name", out var on))
+                    optDict["name"] = on.GetString() ?? "";
+                if (opt.TryGetProperty("value", out var ov))
+                {
+                    if (ov.ValueKind == JsonValueKind.Number && ov.TryGetInt32(out var iv))
+                        optDict["value"] = iv;
+                    else
+                        optDict["value"] = ov.ToString() ?? "";
+                }
+                options.Add(optDict);
+            }
+        }
+
+        if (string.IsNullOrEmpty(name))
+            throw new ArgumentException("Missing 'name' parameter");
+
+        return await _pipeClient.UpsertCustomEnumPropertyAsync(name, options, displayName, category, mode);
+    }
+
+    private async Task<string> ExecuteCreateStateManagerAsync(JsonElement args)
+    {
+        var managerName = args.TryGetProperty("managerName", out var mn) ? mn.GetString() ?? "" : "";
+        var groupName = args.TryGetProperty("groupName", out var gn) ? gn.GetString() ?? "" : "";
+        var groupProperty = args.TryGetProperty("groupProperty", out var gp) ? gp.GetString() ?? "" : "";
+        var bindNodePath = args.TryGetProperty("bindNodePath", out var bnp) ? bnp.GetString() ?? "" : "";
+        var mode = args.TryGetProperty("mode", out var m) ? m.GetString() ?? "preview" : "preview";
+        var confirmLargeBatch = args.TryGetProperty("confirmLargeBatch", out var clb) && clb.GetBoolean();
+        var batchIndex = args.TryGetProperty("batchIndex", out var bi) ? bi.GetInt32() : 0;
+        var batchSize = args.TryGetProperty("batchSize", out var bs) ? Math.Min(bs.GetInt32(), 100) : McpConstants.StateManagerRecommendedBatchSize;
+        var totalStateCount = args.TryGetProperty("totalStateCount", out var tsc) ? tsc.GetInt32() : 0;
+        var strategy = args.TryGetProperty("strategy", out var st) ? st.GetString() ?? "auto" : "auto";
+
+        var states = new List<Dictionary<string, object>>();
+        if (args.TryGetProperty("states", out var statesEl) && statesEl.ValueKind == JsonValueKind.Array)
+        {
+            foreach (var state in statesEl.EnumerateArray())
+            {
+                var stateDict = new Dictionary<string, object>();
+                if (state.TryGetProperty("stateName", out var sn))
+                    stateDict["stateName"] = sn.GetString() ?? "";
+                if (state.TryGetProperty("statePropertyValue", out var spv))
+                {
+                    if (spv.ValueKind == JsonValueKind.Number && spv.TryGetInt32(out var iv))
+                        stateDict["statePropertyValue"] = iv;
+                    else
+                        stateDict["statePropertyValue"] = spv.ToString() ?? "";
+                }
+
+                var objects = new List<Dictionary<string, object>>();
+                if (state.TryGetProperty("objects", out var objsEl) && objsEl.ValueKind == JsonValueKind.Array)
+                {
+                    foreach (var obj in objsEl.EnumerateArray())
+                    {
+                        var objDict = new Dictionary<string, object>();
+                        if (obj.TryGetProperty("nodeName", out var nn))
+                            objDict["nodeName"] = nn.GetString() ?? "";
+                        if (obj.TryGetProperty("nodePath", out var np))
+                            objDict["nodePath"] = np.GetString() ?? "";
+
+                        var props = new Dictionary<string, object>();
+                        if (obj.TryGetProperty("properties", out var propsEl) && propsEl.ValueKind == JsonValueKind.Object)
+                        {
+                            foreach (var prop in propsEl.EnumerateObject())
+                            {
+                                var propValue = prop.Value;
+                                props[prop.Name] = propValue.ValueKind switch
+                                {
+                                    JsonValueKind.String => propValue.GetString() ?? "",
+                                    JsonValueKind.Number => propValue.TryGetInt32(out var iv) ? (object)iv : propValue.GetDouble(),
+                                    JsonValueKind.True => true,
+                                    JsonValueKind.False => false,
+                                    JsonValueKind.Null => null!,
+                                    _ => propValue.ToString() ?? ""
+                                };
+                            }
+                        }
+                        objDict["properties"] = props;
+                        objects.Add(objDict);
+                    }
+                }
+                stateDict["objects"] = objects;
+                states.Add(stateDict);
+            }
+        }
+
+        if (string.IsNullOrEmpty(managerName) || string.IsNullOrEmpty(groupName) || string.IsNullOrEmpty(groupProperty))
+            throw new ArgumentException("Missing required parameters: managerName, groupName, groupProperty");
+
+        var stateCount = states.Count;
+        var grandTotal = totalStateCount > 0 ? totalStateCount : stateCount;
+        if (grandTotal >= 9 && batchSize > McpConstants.StateManagerRecommendedBatchSize)
+        {
+            Console.Error.WriteLine(
+                $"[ToolHandler] create_state_manager: clamping batchSize {batchSize} -> {McpConstants.StateManagerRecommendedBatchSize} (stateCount={grandTotal})");
+            batchSize = McpConstants.StateManagerRecommendedBatchSize;
+        }
+
+        var partialPayload = totalStateCount > stateCount
+            || (batchIndex > 0 && batchIndex * batchSize >= stateCount);
+        var statesInBatch = partialPayload
+            ? stateCount
+            : Math.Min(batchSize, Math.Max(0, stateCount - batchIndex * batchSize));
+        var readTimeoutMs = McpConstants.ComputeStateManagerReadTimeoutMs(statesInBatch, batchIndex);
+
+        return await _pipeClient.CreateStateManagerAsync(
+            managerName, groupName, groupProperty, states,
+            bindNodePath, mode, confirmLargeBatch, batchIndex, batchSize, strategy,
+            readTimeoutMs, totalStateCount);
     }
 
     private async Task<string> ExecuteGetStatusAsync()

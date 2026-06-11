@@ -18,7 +18,7 @@ Claude Code 通过 stdin/stdout 与本脚本通信（JSON-RPC over stdio）。
   OSS_ENDPOINT          - OSS endpoint（默认 oss-cn-beijing.aliyuncs.com）
   OSS_BUCKET            - OSS bucket 名称（默认 claudemcp）
   POLL_INTERVAL         - 轮询间隔秒数（默认 1.0）
-  REQUEST_TIMEOUT       - 等待响应超时秒数（默认 30）
+  REQUEST_TIMEOUT       - 等待响应超时秒数（默认 660，需大于 Kanzi 单批 apply 超时）
 """
 
 import oss2
@@ -36,7 +36,7 @@ ACCESS_KEY_SECRET = os.environ.get('OSS_ACCESS_KEY_SECRET', '')
 BUCKET_NAME = os.environ.get('OSS_BUCKET', 'claudemcp')
 
 POLL_INTERVAL = float(os.environ.get('POLL_INTERVAL', '1.0'))
-REQUEST_TIMEOUT = int(os.environ.get('REQUEST_TIMEOUT', '30'))
+REQUEST_TIMEOUT = int(os.environ.get('REQUEST_TIMEOUT', '660'))
 
 REQUEST_PREFIX = 'requests/'
 RESPONSE_PREFIX = 'responses/'
@@ -265,6 +265,43 @@ TOOLS = [
                 "checkImages": {"type": "boolean", "description": "Check for unused images", "default": True},
                 "checkTextures": {"type": "boolean", "description": "Check for unused textures", "default": True}
             }
+        }
+    },
+
+    # ========== 自定义属性工具 ==========
+    {
+        "name": "kanzi_upsert_custom_enum_property",
+        "description": "Create or update a Custom Enum Property in the project. If a property with the same name already exists and is a CustomEnumProperty, it updates the options/displayName/category. If it exists but is a different type, it deletes and recreates. If it does not exist, it creates a new one.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "name": {"type": "string", "description": "Property name (e.g., 'WarningValue', 'PopState')"},
+                "options": {"type": "array", "description": "Array of { name: string, value: int } objects defining the enum options"},
+                "displayName": {"type": "string", "description": "Display name for the property (default: '<Name>-name')"},
+                "category": {"type": "string", "description": "Category for the property (default: '')"},
+                "mode": {"type": "string", "enum": ["preview", "apply"], "description": "'preview' checks without applying, 'apply' makes the change", "default": "preview"}
+            },
+            "required": ["name", "options"]
+        }
+    },
+    {
+        "name": "kanzi_create_state_manager",
+        "description": "Create a State Manager with StateGroup, States, and StateObjects. Supports batched creation for large state counts.\n\nUsage order:\n1. First call kanzi_upsert_custom_enum_property to ensure the groupProperty exists\n2. Then call kanzi_create_state_manager with mode=preview to see the batch plan\n3. If stateCount >= 9, use batchSize=8 and loop batchIndex=0..totalBatches-1 with mode=apply\n4. If stateCount > 200, must set confirmLargeBatch=true\n5. Not recommended to exceed 500 states per group; split into multiple StateGroups instead",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "managerName": {"type": "string", "description": "Name of the State Manager"},
+                "groupName": {"type": "string", "description": "Name of the State Group"},
+                "groupProperty": {"type": "string", "description": "Property name for the group controller (must be a CustomEnumProperty)"},
+                "states": {"type": "array", "description": "Array of state definitions. Each state: { stateName, statePropertyValue, objects: [{ nodeName, nodePath, properties: { key: value } }] }"},
+                "bindNodePath": {"type": "string", "description": "Path of the node to bind the StateManager to (e.g., 'Screens/Screen/RootPage/Viewport')"},
+                "mode": {"type": "string", "enum": ["preview", "apply"], "description": "'preview' or 'apply'", "default": "preview"},
+                "confirmLargeBatch": {"type": "boolean", "description": "Required true when stateCount > 200", "default": False},
+                "batchIndex": {"type": "integer", "description": "Batch index for incremental apply (0-based)", "default": 0},
+                "batchSize": {"type": "integer", "description": "Number of states per batch (max 100; use 8 when stateCount >= 9)", "default": 8},
+                "strategy": {"type": "string", "enum": ["auto", "clone", "direct"], "description": "Creation strategy: 'auto', 'clone', or 'direct'", "default": "auto"}
+            },
+            "required": ["managerName", "groupName", "groupProperty", "states"]
         }
     },
 

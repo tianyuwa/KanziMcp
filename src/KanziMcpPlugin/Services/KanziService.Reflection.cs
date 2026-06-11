@@ -116,7 +116,25 @@ namespace KanziMcpPlugin.Services
         /// </summary>
         private string StripProjectPrefix(string path)
         {
-            if (string.IsNullOrEmpty(path) || string.IsNullOrEmpty(_projectName))
+            if (string.IsNullOrEmpty(path))
+                return path;
+
+            // 处理 kzb://projectName/path 格式（Kanzi URI）
+            if (path.StartsWith("kzb://"))
+            {
+                var withoutScheme = path.Substring(6); // Remove "kzb://"
+                var slashIdx = withoutScheme.IndexOf('/');
+                if (slashIdx >= 0)
+                {
+                    // kzb://projectName/rest/of/path -> rest/of/path
+                    var afterProject = withoutScheme.Substring(slashIdx + 1);
+                    return afterProject;
+                }
+                // kzb://projectName (no trailing path) -> empty (root)
+                return "";
+            }
+
+            if (string.IsNullOrEmpty(_projectName))
                 return path;
 
             // 如果路径以 "projectName/" 开头，去掉它

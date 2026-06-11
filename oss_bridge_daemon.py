@@ -12,7 +12,7 @@ Environment Variables:
   OSS_BUCKET            - OSS bucket name (default: claudemcp)
   KANZI_SERVER_PATH     - KanziMcpServer.exe path
   POLL_INTERVAL         - Poll interval in seconds (default: 0.5)
-  REQUEST_TIMEOUT       - Request processing timeout in seconds (default: 30)
+  REQUEST_TIMEOUT       - Request processing timeout in seconds (default: 660, must exceed Kanzi batch timeout)
   LOG_FILE              - Log file path (default: oss_bridge_daemon.log next to exe)
 """
 
@@ -37,7 +37,7 @@ KANZI_SERVER_PATH = os.environ.get(
     r'C:\KanziMonitor\Build_MCP\KanziMcpServer\KanziMcpServer.exe'
 )
 POLL_INTERVAL = float(os.environ.get('POLL_INTERVAL', '0.5'))
-REQUEST_TIMEOUT = int(os.environ.get('REQUEST_TIMEOUT', '30'))
+REQUEST_TIMEOUT = int(os.environ.get('REQUEST_TIMEOUT', '660'))
 
 REQUEST_PREFIX = 'requests/'
 RESPONSE_PREFIX = 'responses/'

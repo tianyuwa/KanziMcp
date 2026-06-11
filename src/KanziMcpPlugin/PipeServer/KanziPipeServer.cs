@@ -38,6 +38,7 @@ namespace KanziMcpPlugin.PipeServer
         private TcpListener? _listener;
         private bool _isRunning;
         private int _connectionCount;
+        private System.Threading.SynchronizationContext? _syncContext;
 
         // 日志级别控制: 0=关键, 1=信息, 2=详细
         private const int LogLevel = 1;
@@ -101,6 +102,12 @@ namespace KanziMcpPlugin.PipeServer
             }
 
             Log("Starting TcpServer...");
+
+            // 捕获 UI 线程同步上下文（Kanzi Studio 在 UI 线程调用 Start）
+            _syncContext = System.Threading.SynchronizationContext.Current;
+            Log(_syncContext != null
+                ? $"SynchronizationContext captured: {_syncContext.GetType().Name}"
+                : "WARNING: No SynchronizationContext available, requests will run on thread pool threads");
 
             try
             {
@@ -220,7 +227,30 @@ namespace KanziMcpPlugin.PipeServer
                         }
 
                         Log($"Request: {request.Substring(0, Math.Min(120, request.Length))}", 2);
-                        var response = ProcessRequest(request);
+
+                        // 将请求处理调度到 UI 线程（Kanzi Studio API 需要 UI 线程访问）
+                        string response;
+                        if (_syncContext != null)
+                        {
+                            var tcs = new System.Threading.Tasks.TaskCompletionSource<string>();
+                            _syncContext.Post(_ =>
+                            {
+                                try
+                                {
+                                    tcs.SetResult(ProcessRequest(request));
+                                }
+                                catch (Exception ex)
+                                {
+                                    tcs.SetException(ex);
+                                }
+                            }, null);
+                            response = await tcs.Task;
+                        }
+                        else
+                        {
+                            response = ProcessRequest(request);
+                        }
+
                         Log($"Response: {response.Substring(0, Math.Min(120, response.Length))}", 2);
                         
                         await writer.WriteLineAsync(response);
@@ -288,6 +318,12 @@ namespace KanziMcpPlugin.PipeServer
 
                     // Resource diagnosis
                     "doctor_resource" => _kanziService.DoctorResource(args),
+
+                    // Custom Enum Property
+                    "upsert_custom_enum_property" => _kanziService.UpsertCustomEnumProperty(args),
+
+                    // State Manager
+                    "create_state_manager" => _kanziService.CreateStateManager(args),
 
                     // Status
                     "get_status" => _kanziService.GetStatus(args),

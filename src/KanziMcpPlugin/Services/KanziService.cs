@@ -10,7 +10,9 @@
 //   KanziService.Audit.cs        — 审计工具
 //   KanziService.Status.cs       — 状态
 //   KanziService.Resources.cs    — 资源导入/诊断
-//   KanziService.Helpers.cs      — 序列化/日志/过滤器
+//   KanziService.Helpers.cs           — 序列化/日志/过滤器
+//   KanziService.CustomProperties.cs  — 自定义枚举属性
+//   KanziService.StateManager.cs      — 状态机创建
 //   Models/NodeFilter.cs, Models/PropertyMetadata.cs
 // 主要职责:
 //   1. 通过反射调用 Kanzi Studio Plugin API（避免硬依赖具体版本）

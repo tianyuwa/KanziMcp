@@ -51,7 +51,26 @@
       "mcp__kanzi__kanzi_audit_project_structure",
       "mcp__serena__onboarding",
       "mcp__serena__read_memory",
-      "mcp__serena__write_memory"
+      "mcp__serena__write_memory",
+      "Bash(echo \"\" > /c/temp/KanziMcpPlugin.log)",
+      "Bash(git -C \"c:/Users/WTY/WorkBuddy/kanziMcpServer\" log --oneline -10 -- src/KanziMcpPlugin/Services/KanziService.StateManager.cs src/KanziMcpServer/Handlers/ToolHandler.cs src/KanziMcpServer/Services/KanziPipeClient.cs)",
+      "Bash(git -C \"c:/Users/WTY/WorkBuddy/kanziMcpServer\" diff HEAD -- src/KanziMcpServer/Handlers/ToolHandler.cs)",
+      "Read(//c/KanziMonitor/Build_MCP/KanziMcpServer/**)",
+      "Read(//c/KanziMonitor//**)",
+      "Bash(cmd.exe /c \"cd /d c:\\\\Users\\\\WTY\\\\WorkBuddy\\\\kanziMcpServer && publish.bat\")",
+      "Bash(cmd.exe /c \"publish.bat\")",
+      "Bash(dotnet publish *)",
+      "Bash(\"c:/Users/WTY/WorkBuddy/ossutil-v1.7.19-windows-amd64/ossutil64.exe\" cp *)",
+      "Bash(cp \"c:/Users/WTY/WorkBuddy/kanziMcpServer/src/KanziMcpPlugin/bin/Release/net48/PluginKanziMCP.dll\" \"/c/ProgramData/Rightware/Kanzi 3.9.10/plugins/PluginKanziMCP.dll\" && echo \"Plugin DLL deployed\" || echo \"FAILED\")",
+      "Bash(echo \"EXIT:$?\")",
+      "Bash(cat /tmp/warn500.json)",
+      "Read(//tmp/**)",
+      "Bash(node -e ' *)",
+      "Bash(node -e \"const o=[];for\\(let i=1;i<=500;i++\\)o.push\\({name:'warn_'+i,value:i}\\);process.stdout.write\\(JSON.stringify\\(o\\)\\)\")"
+    ],
+    "additionalDirectories": [
+      "C:\\temp",
+      "C:\\ProgramData\\Rightware\\Kanzi 3.9.10\\plugins"
     ]
   }
 }
