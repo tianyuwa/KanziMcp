@@ -286,19 +286,21 @@ TOOLS = [
     },
     {
         "name": "kanzi_create_state_manager",
-        "description": "Create a State Manager with StateGroup, States, and StateObjects. Supports batched creation for large state counts.\n\nUsage order:\n1. First call kanzi_upsert_custom_enum_property to ensure the groupProperty exists\n2. Then call kanzi_create_state_manager with mode=preview to see the batch plan\n3. If stateCount >= 9, use batchSize=8 and loop batchIndex=0..totalBatches-1 with mode=apply\n4. If stateCount > 200, must set confirmLargeBatch=true\n5. Not recommended to exceed 500 states per group; split into multiple StateGroups instead",
+        "description": "Create a State Manager with StateGroup, States, and StateObjects. Supports batched creation for large state counts.\n\nUsage order:\n1. First call kanzi_upsert_custom_enum_property to ensure the groupProperty exists\n2. Then call kanzi_create_state_manager with mode=preview to see the batch plan\n3. Large jobs: autoGenerateCount + 1 template (use {0} in strings), batchSize=12..16, loop batchIndex with mode=apply\n4. Or per-batch states with totalStateCount\n5. If stateCount > 200, must set confirmLargeBatch=true\n6. Not recommended to exceed 500 states per group; split into multiple StateGroups instead",
         "inputSchema": {
             "type": "object",
             "properties": {
                 "managerName": {"type": "string", "description": "Name of the State Manager"},
                 "groupName": {"type": "string", "description": "Name of the State Group"},
                 "groupProperty": {"type": "string", "description": "Property name for the group controller (must be a CustomEnumProperty)"},
-                "states": {"type": "array", "description": "Array of state definitions. Each state: { stateName, statePropertyValue, objects: [{ nodeName, nodePath, properties: { key: value } }] }"},
+                "states": {"type": "array", "description": "State definitions, or one template when autoGenerateCount is set ({0} = index)"},
                 "bindNodePath": {"type": "string", "description": "Path of the node to bind the StateManager to (e.g., 'Screens/Screen/RootPage/Viewport')"},
                 "mode": {"type": "string", "enum": ["preview", "apply"], "description": "'preview' or 'apply'", "default": "preview"},
                 "confirmLargeBatch": {"type": "boolean", "description": "Required true when stateCount > 200", "default": False},
                 "batchIndex": {"type": "integer", "description": "Batch index for incremental apply (0-based)", "default": 0},
-                "batchSize": {"type": "integer", "description": "Number of states per batch (max 100; use 8 when stateCount >= 9)", "default": 8},
+                "batchSize": {"type": "integer", "description": "States per batch (max 16 with autoGenerate/totalStateCount; default 12)", "default": 12},
+                "totalStateCount": {"type": "integer", "description": "Total states when sending per-batch subsets (optional)", "default": 0},
+                "autoGenerateCount": {"type": "integer", "description": "Generate N states from first template; use with batchIndex (optional)", "default": 0},
                 "strategy": {"type": "string", "enum": ["auto", "clone", "direct"], "description": "Creation strategy: 'auto', 'clone', or 'direct'", "default": "auto"}
             },
             "required": ["managerName", "groupName", "groupProperty", "states"]

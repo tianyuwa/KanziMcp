@@ -40,6 +40,9 @@ namespace KanziMcpPlugin.PipeServer
         private int _connectionCount;
         private System.Threading.SynchronizationContext? _syncContext;
 
+        // TCP read/send timeout — align with KanziMcpServer batch timeout (600s)
+        private const int TcpOperationTimeoutMs = 600000;
+
         // 日志级别控制: 0=关键, 1=信息, 2=详细
         private const int LogLevel = 1;
 
@@ -202,15 +205,15 @@ namespace KanziMcpPlugin.PipeServer
                 using (var reader = new StreamReader(stream, Encoding.UTF8, false, 1024, leaveOpen: true))
                 using (var writer = new StreamWriter(stream, new UTF8Encoding(false), 1024, leaveOpen: true))
                 {
-                    client.ReceiveTimeout = 120000;
-                    client.SendTimeout = 120000;
+                    client.ReceiveTimeout = TcpOperationTimeoutMs;
+                    client.SendTimeout = TcpOperationTimeoutMs;
 
                     while (client.Connected && !ct.IsCancellationRequested)
                     {
                         // .NET Framework: ReadLineAsync 不支持 CancellationToken
                         // 使用 Task.Run + Timeout 模拟
                         var readTask = Task.Run(() => reader.ReadLine(), ct);
-                        var timeoutTask = Task.Delay(120000, ct);
+                        var timeoutTask = Task.Delay(TcpOperationTimeoutMs, ct);
                         
                         var completedTask = await Task.WhenAny(readTask, timeoutTask);
                         if (completedTask == timeoutTask)

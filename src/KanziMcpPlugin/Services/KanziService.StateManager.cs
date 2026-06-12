@@ -22,6 +22,12 @@ namespace KanziMcpPlugin.Services
         #region State Manager 创建
 
         private const int RecommendedBatchSize = 8;
+        private const int MaxApplyBatchSize = 16;
+        private const int PumpWpfEveryNStates = 5;
+
+        /// <summary>Cached CustomEnum options per groupProperty (batchIndex>0 apply skips PropertyTypeLibrary scan).</summary>
+        private static readonly Dictionary<string, Dictionary<string, int>> EnumOptionsCache =
+            new Dictionary<string, Dictionary<string, int>>(StringComparer.Ordinal);
 
         /// <summary>
         /// 创建 State Manager（分批支持，性能协议）
@@ -54,43 +60,67 @@ namespace KanziMcpPlugin.Services
             if (batchSize < 1) batchSize = 1;
             if (batchSize > 100) batchSize = 100;
 
-            // Parse states
+            // Parse states (may be a single template when autoGenerateCount is set)
             var allStates = ParseStateDefinitions(args.Value);
 
-            // Auto-generate states from template if autoGenerateCount is set
+            // Auto-generate: apply mode expands only the current batch slice (not all N in memory)
             if (autoGenerateCount > 0 && allStates != null && allStates.Count > 0)
             {
                 var template = allStates[0];
-                allStates = GenerateStatesFromTemplate(template, autoGenerateCount);
-                Log($"CreateStateManager: auto-generated {allStates.Count} states from template");
+                if (mode == "apply")
+                {
+                    if (totalStateCountArg <= 0)
+                        totalStateCountArg = autoGenerateCount;
+
+                    var startOneBased = batchIndex * batchSize + 1;
+                    if (startOneBased > autoGenerateCount)
+                    {
+                        return ErrorJson(
+                            $"batchIndex {batchIndex} starts at state {startOneBased} but autoGenerateCount is {autoGenerateCount}.");
+                    }
+
+                    var count = Math.Min(batchSize, autoGenerateCount - batchIndex * batchSize);
+                    allStates = GenerateStatesFromTemplateRange(template, startOneBased, count);
+                    Log($"CreateStateManager: auto-generated batch {batchIndex}, {count} states (index {startOneBased}..{startOneBased + count - 1})");
+                }
+                else
+                {
+                    Log($"CreateStateManager: preview with autoGenerateCount={autoGenerateCount} (template only, not expanding all states)");
+                }
             }
 
             if (allStates == null || allStates.Count == 0)
                 return ErrorJson("No states provided or states array is invalid");
 
-            var stateCount = allStates.Count;
+            var payloadStateCount = allStates.Count;
+            var grandTotalForGuards = totalStateCountArg > 0 ? totalStateCountArg
+                : (autoGenerateCount > 0 ? autoGenerateCount : payloadStateCount);
+            var stateCount = mode == "preview" && autoGenerateCount > 0 ? autoGenerateCount : payloadStateCount;
 
-            // 9+ states: enforce small batches on apply to avoid TCP/MCP timeouts
-            if (stateCount >= 9 && batchSize > RecommendedBatchSize)
+            // Clamp batchSize: full-array apply only; partial / autoGenerate may use up to MaxApplyBatchSize
+            var isPartialOrGeneratedWorkflow = totalStateCountArg > 0 || autoGenerateCount > 0;
+            if (batchSize > MaxApplyBatchSize)
+                batchSize = MaxApplyBatchSize;
+
+            if (grandTotalForGuards >= 9 && batchSize > RecommendedBatchSize && mode == "apply"
+                && !isPartialOrGeneratedWorkflow && payloadStateCount >= 9)
             {
-                if (mode == "apply")
-                {
-                    Log($"CreateStateManager: clamping batchSize {batchSize} -> {RecommendedBatchSize} (stateCount={stateCount}, mode=apply)");
-                    batchSize = RecommendedBatchSize;
-                }
+                Log($"CreateStateManager: clamping batchSize {batchSize} -> {RecommendedBatchSize} (full-array apply, stateCount={payloadStateCount})");
+                batchSize = RecommendedBatchSize;
             }
 
-            var totalBatches = (int)Math.Ceiling((double)stateCount / batchSize);
+            var totalBatches = (int)Math.Ceiling((double)grandTotalForGuards / batchSize);
             if (totalBatches == 0) totalBatches = 1;
 
-            // Count state objects and property writes
+            // Count state objects and property writes (preview / small payloads only)
             int stateObjectCount = 0;
             int propertyWriteCount = 0;
-            foreach (var s in allStates)
+            if (mode == "preview" || payloadStateCount <= batchSize)
             {
-                var objs = s.Objects;
-                if (objs != null)
+                foreach (var s in allStates)
                 {
+                    var objs = s.Objects;
+                    if (objs == null) continue;
                     stateObjectCount += objs.Count;
                     foreach (var o in objs)
                     {
@@ -100,26 +130,41 @@ namespace KanziMcpPlugin.Services
                 }
             }
 
-            Log($"CreateStateManager: {stateCount} states, {stateObjectCount} objects, {propertyWriteCount} props, batch={batchIndex}/{totalBatches}, mode={mode}");
+            Log($"CreateStateManager: {stateCount} states (payload={payloadStateCount}), {stateObjectCount} objects, batch={batchIndex}/{totalBatches}, mode={mode}");
 
             // === Scale guards ===
-            if (stateCount > 500)
+            if (grandTotalForGuards > 500)
             {
                 return ErrorJson(
-                    $"State count ({stateCount}) exceeds maximum of 500 per StateGroup. " +
+                    $"State count ({grandTotalForGuards}) exceeds maximum of 500 per StateGroup. " +
                     $"Please split into multiple StateGroups or use Data Source instead.");
             }
 
-            if (stateCount > 200 && !confirmLargeBatch && mode == "apply")
+            if (grandTotalForGuards > 200 && !confirmLargeBatch && mode == "apply")
             {
                 return ErrorJson(
-                    $"State count ({stateCount}) > 200 requires confirmLargeBatch: true. " +
+                    $"State count ({grandTotalForGuards}) > 200 requires confirmLargeBatch: true. " +
                     $"Set confirmLargeBatch: true to proceed, or use a smaller batch.");
             }
 
-            // === Validate groupProperty ===
+            // === Validate groupProperty (cached enum options; batchIndex>0 skips library scan) ===
             string? enumValidationError;
-            var enumOptions = ValidateGroupProperty(groupProperty, allStates, out enumValidationError);
+            Dictionary<string, int>? enumOptions;
+            if (mode == "apply" && batchIndex > 0)
+            {
+                enumOptions = ValidateStatesWithCachedEnum(groupProperty, allStates, out enumValidationError);
+            }
+            else if (mode == "preview" && autoGenerateCount > 0)
+            {
+                enumOptions = ValidateAutoGenerateEnumRange(groupProperty, autoGenerateCount, allStates, out enumValidationError);
+            }
+            else
+            {
+                enumOptions = ValidateGroupProperty(groupProperty, allStates, out enumValidationError);
+                if (enumOptions != null && mode == "apply" && batchIndex == 0)
+                    EnumOptionsCache[groupProperty] = enumOptions;
+            }
+
             if (enumValidationError != null)
                 return ErrorJson(enumValidationError);
 
@@ -158,7 +203,8 @@ namespace KanziMcpPlugin.Services
                     ["propertyWriteCount"] = propertyWriteCount,
                     ["batchSize"] = batchSize,
                     ["totalStateCount"] = totalStateCountArg > 0 ? totalStateCountArg : (object?)null,
-                    ["recommendedBatchSize"] = stateCount >= 9 ? RecommendedBatchSize : batchSize,
+                    ["autoGenerateCount"] = autoGenerateCount > 0 ? autoGenerateCount : (object?)null,
+                    ["recommendedBatchSize"] = stateCount >= 9 ? Math.Min(batchSize, MaxApplyBatchSize) : batchSize,
                     ["effectiveBatchSize"] = effectiveBatchSize,
                     ["totalBatches"] = totalBatches,
                     ["effectiveTotalBatches"] = effectiveTotalBatches,
@@ -166,8 +212,8 @@ namespace KanziMcpPlugin.Services
                     ["riskLevel"] = riskLevel,
                     ["recommendation"] = recommendation,
                     ["applyHint"] = previewGrandTotal >= 9
-                        ? $"Send the FULL states array on every apply call with batchSize={RecommendedBatchSize}, loop batchIndex=0..{effectiveTotalBatches - 1}. " +
-                          $"Alternatively send only each batch's states with totalStateCount={previewGrandTotal}."
+                        ? $"Fast path: 1 template state + autoGenerateCount={previewGrandTotal}, batchSize={Math.Min(batchSize, MaxApplyBatchSize)}, loop batchIndex with mode=apply. " +
+                          $"Or send per-batch states with totalStateCount={previewGrandTotal}."
                         : "Single apply is OK for <= 8 states",
                     ["bindNodePath"] = bindNodePath,
                     ["bindNodeExists"] = bindNodeExists,
@@ -406,9 +452,11 @@ namespace KanziMcpPlugin.Services
                     if ((i + 1) % 10 == 0)
                         WriteProgress($"StateManager progress: {i + 1}/{batchStates.Count}");
 
-                    // Pump WPF messages to prevent UI thread blocking and Kanzi API timeouts
-                    PumpWpfMessages();
+                    if ((i + 1) % PumpWpfEveryNStates == 0)
+                        PumpWpfMessages();
                 }
+
+                PumpWpfMessages();
 
                 return (true, null);
             }
@@ -478,7 +526,6 @@ namespace KanziMcpPlugin.Services
                 var cloneMethodType = pars[2].ParameterType;
                 var defaultValue = Enum.GetValues(cloneMethodType).GetValue(0);
                 var result = cloneUnderMethod.Invoke(templateState, new[] { newName, parent, defaultValue }) as ProjectItem;
-                Log($"CloneStateTyped: cloned '{templateState.Name}' -> '{newName}'");
                 return result;
             }
             catch (Exception ex)
@@ -942,9 +989,77 @@ namespace KanziMcpPlugin.Services
         /// <summary>
         /// Validate groupProperty exists in PropertyTypeLibrary and is a CustomEnumProperty.
         /// Also validates all statePropertyValues fall within enum options.
+        /// Caches options on first successful load (apply batch 0).
         /// </summary>
         private Dictionary<string, int>? ValidateGroupProperty(string groupProperty,
             List<StateDefinition> states, out string? error)
+        {
+            var options = LoadEnumOptionsFromProject(groupProperty, out error);
+            if (options == null)
+                return null;
+
+            error = ValidateStateListAgainstEnum(states, options, groupProperty);
+            if (error != null)
+                return null;
+
+            Log($"ValidateGroupProperty: '{groupProperty}' valid, {options.Count} enum options, {states.Count} states checked");
+            return options;
+        }
+
+        /// <summary>
+        /// Apply batches after batch 0: use cached enum options, validate payload states only.
+        /// </summary>
+        private Dictionary<string, int>? ValidateStatesWithCachedEnum(string groupProperty,
+            List<StateDefinition> states, out string? error)
+        {
+            if (!EnumOptionsCache.TryGetValue(groupProperty, out var options))
+            {
+                options = LoadEnumOptionsFromProject(groupProperty, out error);
+                if (options == null)
+                    return null;
+                EnumOptionsCache[groupProperty] = options;
+            }
+            else
+            {
+                error = null;
+            }
+
+            error = ValidateStateListAgainstEnum(states, options, groupProperty);
+            return error == null ? options : null;
+        }
+
+        /// <summary>
+        /// Preview for autoGenerateCount: validate template + values 1..count without expanding all states.
+        /// </summary>
+        private Dictionary<string, int>? ValidateAutoGenerateEnumRange(string groupProperty, int autoGenerateCount,
+            List<StateDefinition> templateStates, out string? error)
+        {
+            var options = LoadEnumOptionsFromProject(groupProperty, out error);
+            if (options == null)
+                return null;
+
+            if (templateStates.Count > 0)
+            {
+                error = ValidateStateListAgainstEnum(templateStates, options, groupProperty);
+                if (error != null)
+                    return null;
+            }
+
+            var validValues = new HashSet<int>(options.Values);
+            for (int v = 1; v <= autoGenerateCount; v++)
+            {
+                if (!validValues.Contains(v))
+                {
+                    error = $"autoGenerateCount={autoGenerateCount} requires enum value {v} in '{groupProperty}', but it is missing.";
+                    return null;
+                }
+            }
+
+            Log($"ValidateAutoGenerateEnumRange: '{groupProperty}' ok for 1..{autoGenerateCount}");
+            return options;
+        }
+
+        private Dictionary<string, int>? LoadEnumOptionsFromProject(string groupProperty, out string? error)
         {
             error = null;
 
@@ -996,7 +1111,6 @@ namespace KanziMcpPlugin.Services
                     return null;
                 }
 
-                // Check if it's a CustomEnumProperty
                 var ptTypeName = foundProperty.GetType().Name;
                 if (!ptTypeName.Contains("CustomEnumProperty"))
                 {
@@ -1004,107 +1118,124 @@ namespace KanziMcpPlugin.Services
                     return null;
                 }
 
-                // Extract enum options
-                var options = new Dictionary<string, int>();
-                var optionsProp = SafeGetProperty(foundProperty, "Options");
-                if (optionsProp is IDictionary dict)
-                {
-                    foreach (DictionaryEntry entry in dict)
-                    {
-                        var key = entry.Key?.ToString() ?? "";
-                        var val = Convert.ToInt32(entry.Value);
-                        options[key] = val;
-                    }
-                }
-                else if (optionsProp is IEnumerable enumItems)
-                {
-                    foreach (var item in enumItems)
-                    {
-                        var key = SafeGetProperty(item, "Key")?.ToString() ?? "";
-                        var val = SafeGetProperty(item, "Value");
-                        if (val != null && !string.IsNullOrEmpty(key))
-                            options[key] = Convert.ToInt32(val);
-                    }
-                }
-
+                var options = ExtractEnumOptionsFromProperty(foundProperty);
                 if (options.Count == 0)
                 {
                     error = $"CustomEnumProperty '{groupProperty}' has no options";
                     return null;
                 }
 
-                // Validate each state's statePropertyValue falls within enum options
-                var validValues = new HashSet<int>(options.Values);
-                foreach (var state in states)
-                {
-                    if (!validValues.Contains(state.StatePropertyValue))
-                    {
-                        error = $"State '{state.StateName}' has statePropertyValue={state.StatePropertyValue} " +
-                                $"which is not a valid value in enum '{groupProperty}'. " +
-                                $"Valid values: [{string.Join(", ", options.Values)}]";
-                        return null;
-                    }
-                }
-
-                Log($"ValidateGroupProperty: '{groupProperty}' valid, {options.Count} enum options, {states.Count} states all valid");
                 return options;
             }
             catch (Exception ex)
             {
-                error = $"Failed to validate groupProperty: {ex.Message}";
+                error = $"Failed to load enum options: {ex.Message}";
                 return null;
             }
         }
 
+        private Dictionary<string, int> ExtractEnumOptionsFromProperty(object foundProperty)
+        {
+            var options = new Dictionary<string, int>(StringComparer.Ordinal);
+            var optionsProp = SafeGetProperty(foundProperty, "Options");
+            if (optionsProp is IDictionary dict)
+            {
+                foreach (DictionaryEntry entry in dict)
+                {
+                    var key = entry.Key?.ToString() ?? "";
+                    if (!string.IsNullOrEmpty(key))
+                        options[key] = Convert.ToInt32(entry.Value);
+                }
+            }
+            else if (optionsProp is IEnumerable enumItems)
+            {
+                foreach (var item in enumItems)
+                {
+                    var key = SafeGetProperty(item, "Key")?.ToString() ?? "";
+                    var val = SafeGetProperty(item, "Value");
+                    if (val != null && !string.IsNullOrEmpty(key))
+                        options[key] = Convert.ToInt32(val);
+                }
+            }
+
+            return options;
+        }
+
+        private static string? ValidateStateListAgainstEnum(List<StateDefinition> states,
+            Dictionary<string, int> options, string groupProperty)
+        {
+            var validValues = new HashSet<int>(options.Values);
+            foreach (var state in states)
+            {
+                if (!validValues.Contains(state.StatePropertyValue))
+                {
+                    return $"State '{state.StateName}' has statePropertyValue={state.StatePropertyValue} " +
+                           $"which is not a valid value in enum '{groupProperty}'.";
+                }
+            }
+
+            return null;
+        }
+
         /// <summary>
-        /// Expand a template state into N auto-generated states.
-        /// {0} in strings is replaced with the 1-based index.
-        /// The statePropertyValue is set to the 1-based index.
+        /// Expand a template state into N auto-generated states (1..count).
         /// </summary>
         private static List<StateDefinition> GenerateStatesFromTemplate(StateDefinition template, int count)
         {
+            return GenerateStatesFromTemplateRange(template, 1, count);
+        }
+
+        /// <summary>
+        /// Expand template for a contiguous index range (1-based start, count items).
+        /// </summary>
+        private static List<StateDefinition> GenerateStatesFromTemplateRange(
+            StateDefinition template, int startIndexOneBased, int count)
+        {
             var states = new List<StateDefinition>(count);
-            for (int i = 1; i <= count; i++)
-            {
-                var sd = new StateDefinition
-                {
-                    StateName = ReplaceTemplate(template.StateName, i),
-                    StatePropertyValue = i
-                };
-
-                if (template.Objects != null && template.Objects.Count > 0)
-                {
-                    sd.Objects = new List<StateObjectDefinition>();
-                    foreach (var tplObj in template.Objects)
-                    {
-                        var od = new StateObjectDefinition
-                        {
-                            NodeName = ReplaceTemplate(tplObj.NodeName, i),
-                            NodePath = ReplaceTemplate(tplObj.NodePath, i)
-                        };
-
-                        if (tplObj.Properties != null && tplObj.Properties.Count > 0)
-                        {
-                            od.Properties = new Dictionary<string, object>();
-                            foreach (var kvp in tplObj.Properties)
-                            {
-                                var key = ReplaceTemplate(kvp.Key, i);
-                                var value = kvp.Value;
-                                if (value is string s)
-                                    value = ReplaceTemplate(s, i);
-                                else if (value is JsonElement je && je.ValueKind == JsonValueKind.String)
-                                    value = ReplaceTemplate(je.GetString() ?? "", i);
-                                od.Properties[key] = value;
-                            }
-                        }
-
-                        sd.Objects.Add(od);
-                    }
-                }
-
-                states.Add(sd);
-            }
+            for (int i = 0; i < count; i++)
+                states.Add(GenerateSingleStateFromTemplate(template, startIndexOneBased + i));
             return states;
+        }
+
+        private static StateDefinition GenerateSingleStateFromTemplate(StateDefinition template, int index)
+        {
+            var sd = new StateDefinition
+            {
+                StateName = ReplaceTemplate(template.StateName, index),
+                StatePropertyValue = index
+            };
+
+            if (template.Objects != null && template.Objects.Count > 0)
+            {
+                sd.Objects = new List<StateObjectDefinition>();
+                foreach (var tplObj in template.Objects)
+                {
+                    var od = new StateObjectDefinition
+                    {
+                        NodeName = ReplaceTemplate(tplObj.NodeName, index),
+                        NodePath = ReplaceTemplate(tplObj.NodePath, index)
+                    };
+
+                    if (tplObj.Properties != null && tplObj.Properties.Count > 0)
+                    {
+                        od.Properties = new Dictionary<string, object>();
+                        foreach (var kvp in tplObj.Properties)
+                        {
+                            var key = ReplaceTemplate(kvp.Key, index);
+                            var value = kvp.Value;
+                            if (value is string s)
+                                value = ReplaceTemplate(s, index);
+                            else if (value is JsonElement je && je.ValueKind == JsonValueKind.String)
+                                value = ReplaceTemplate(je.GetString() ?? "", index);
+                            od.Properties[key] = value;
+                        }
+                    }
+
+                    sd.Objects.Add(od);
+                }
+            }
+
+            return sd;
         }
 
         private static string ReplaceTemplate(string input, int index)

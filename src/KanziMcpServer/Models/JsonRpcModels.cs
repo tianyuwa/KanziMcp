@@ -100,10 +100,13 @@ public static class McpConstants
 
     // State Manager batching / timeouts
     public const int StateManagerRecommendedBatchSize = 8;
+    public const int StateManagerDefaultBatchSize = 12;
+    public const int StateManagerMaxApplyBatchSize = 16;            // partial/autoGenerate apply batches
     public const int StateManagerMinBatchTimeoutMs = 120000;      // 2 min floor per apply batch
     public const int StateManagerMaxBatchTimeoutMs = 600000;      // 10 min cap per apply batch
-    public const int StateManagerMsPerState = 15000;              // ~15s per state (create + objects + props)
+    public const int StateManagerMsPerState = 8000;               // ~8s per state (post clone-opt; headroom for slow Studio)
     public const int StateManagerBatch0OverheadMs = 30000;          // StateManager + StateGroup setup
+    public const int PluginTcpTimeoutMs = 600000;                 // align plugin TCP with StateManagerMaxBatchTimeoutMs
     public const int OssMinRequestTimeoutSeconds = 660;             // must exceed StateManagerMaxBatchTimeoutMs
 
     /// <summary>

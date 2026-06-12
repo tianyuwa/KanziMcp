@@ -459,20 +459,26 @@ public class KanziPipeClient : IDisposable
         int batchSize = McpConstants.StateManagerRecommendedBatchSize,
         string strategy = "auto",
         int? readTimeoutMs = null,
-        int totalStateCount = 0)
+        int totalStateCount = 0,
+        int autoGenerateCount = 0)
     {
         var payloadCount = states.Count;
+        var grandTotal = totalStateCount > 0 ? totalStateCount
+            : (autoGenerateCount > 0 ? autoGenerateCount : payloadCount);
         var partialPayload = totalStateCount > payloadCount
+            || autoGenerateCount > 0
             || (batchIndex > 0 && batchIndex * batchSize >= payloadCount);
-        var statesInBatch = partialPayload
-            ? payloadCount
-            : Math.Min(batchSize, Math.Max(0, payloadCount - batchIndex * batchSize));
+        var statesInBatch = totalStateCount > 0 || autoGenerateCount > 0
+            ? Math.Min(batchSize, Math.Max(0, grandTotal - batchIndex * batchSize))
+            : partialPayload
+                ? payloadCount
+                : Math.Min(batchSize, Math.Max(0, payloadCount - batchIndex * batchSize));
         var timeoutMs = readTimeoutMs
             ?? McpConstants.ComputeStateManagerReadTimeoutMs(statesInBatch, batchIndex);
 
         return await SendRequestAsync<string>("create_state_manager",
             new { managerName, groupName, groupProperty, states, bindNodePath, mode,
-                  confirmLargeBatch, batchIndex, batchSize, strategy, totalStateCount },
+                  confirmLargeBatch, batchIndex, batchSize, strategy, totalStateCount, autoGenerateCount },
             timeoutMs);
     }
 

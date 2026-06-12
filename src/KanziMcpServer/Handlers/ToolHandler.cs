@@ -379,8 +379,8 @@ public class ToolHandler
 Usage order:
 1. First call kanzi_upsert_custom_enum_property to ensure the groupProperty exists
 2. Then call kanzi_create_state_manager with mode=preview to see the batch plan
-3. If stateCount >= 9, use batchSize=8 and loop batchIndex=0..totalBatches-1 with mode=apply (send FULL states array each call)
-4. Alternative: send only each batch's states with totalStateCount set to the full count
+3. Large jobs: autoGenerateCount + 1 template (use {0} in strings), batchSize=12..16, loop batchIndex with mode=apply
+4. Or per-batch states with totalStateCount
 5. If stateCount > 200, must set confirmLargeBatch=true
 6. Not recommended to exceed 500 states per group; split into multiple StateGroups instead",
         InputSchema = Schema(new[]
@@ -388,13 +388,14 @@ Usage order:
             Prop("managerName", "string", "Name of the State Manager"),
             Prop("groupName", "string", "Name of the State Group"),
             Prop("groupProperty", "string", "Property name for the group controller (must be a CustomEnumProperty)"),
-            Prop("states", "array", "Array of state definitions. Each state: { stateName, statePropertyValue, objects: [{ nodeName, nodePath, properties: { key: value } }] }"),
+            Prop("states", "array", "State definitions, or one template when autoGenerateCount is set ({0} = index)"),
             Prop("bindNodePath", "string", "Path of the node to bind the StateManager to (e.g., 'Screens/Screen/RootPage/Viewport')"),
             Prop("mode", "string", "'preview' or 'apply'", defaultValue: "preview", enumValues: new[] { "preview", "apply" }),
             Prop("confirmLargeBatch", "boolean", "Required true when stateCount > 200", defaultValue: false),
             Prop("batchIndex", "integer", "Batch index for incremental apply (0-based)", defaultValue: 0),
-            Prop("batchSize", "integer", "Number of states per batch (max 100; use 8 when stateCount >= 9)", defaultValue: 8),
-            Prop("totalStateCount", "integer", "Total states across all batches when sending per-batch state subsets (optional)", defaultValue: 0),
+            Prop("batchSize", "integer", "States per batch (max 16 with autoGenerate/totalStateCount; default 12)", defaultValue: 12),
+            Prop("totalStateCount", "integer", "Total states when sending per-batch subsets (optional)", defaultValue: 0),
+            Prop("autoGenerateCount", "integer", "Generate N states from first template; use with batchIndex (optional)", defaultValue: 0),
             Prop("strategy", "string", "Creation strategy: 'auto', 'clone', or 'direct'", defaultValue: "auto", enumValues: new[] { "auto", "clone", "direct" }),
         }, required: new[] { "managerName", "groupName", "groupProperty", "states" })
     };
@@ -666,8 +667,9 @@ Usage order:
         var mode = args.TryGetProperty("mode", out var m) ? m.GetString() ?? "preview" : "preview";
         var confirmLargeBatch = args.TryGetProperty("confirmLargeBatch", out var clb) && clb.GetBoolean();
         var batchIndex = args.TryGetProperty("batchIndex", out var bi) ? bi.GetInt32() : 0;
-        var batchSize = args.TryGetProperty("batchSize", out var bs) ? Math.Min(bs.GetInt32(), 100) : McpConstants.StateManagerRecommendedBatchSize;
+        var batchSize = args.TryGetProperty("batchSize", out var bs) ? Math.Min(bs.GetInt32(), 100) : McpConstants.StateManagerDefaultBatchSize;
         var totalStateCount = args.TryGetProperty("totalStateCount", out var tsc) ? tsc.GetInt32() : 0;
+        var autoGenerateCount = args.TryGetProperty("autoGenerateCount", out var agc) ? agc.GetInt32() : 0;
         var strategy = args.TryGetProperty("strategy", out var st) ? st.GetString() ?? "auto" : "auto";
 
         var states = new List<Dictionary<string, object>>();
@@ -727,25 +729,35 @@ Usage order:
             throw new ArgumentException("Missing required parameters: managerName, groupName, groupProperty");
 
         var stateCount = states.Count;
-        var grandTotal = totalStateCount > 0 ? totalStateCount : stateCount;
-        if (grandTotal >= 9 && batchSize > McpConstants.StateManagerRecommendedBatchSize)
+        var grandTotal = totalStateCount > 0 ? totalStateCount
+            : (autoGenerateCount > 0 ? autoGenerateCount : stateCount);
+
+        if (batchSize > McpConstants.StateManagerMaxApplyBatchSize)
+            batchSize = McpConstants.StateManagerMaxApplyBatchSize;
+
+        var isPartialOrGenerated = totalStateCount > 0 || autoGenerateCount > 0;
+        if (grandTotal >= 9 && batchSize > McpConstants.StateManagerRecommendedBatchSize
+            && !isPartialOrGenerated && stateCount >= 9)
         {
             Console.Error.WriteLine(
-                $"[ToolHandler] create_state_manager: clamping batchSize {batchSize} -> {McpConstants.StateManagerRecommendedBatchSize} (stateCount={grandTotal})");
+                $"[ToolHandler] create_state_manager: clamping batchSize {batchSize} -> {McpConstants.StateManagerRecommendedBatchSize} (full-array apply, stateCount={stateCount})");
             batchSize = McpConstants.StateManagerRecommendedBatchSize;
         }
 
         var partialPayload = totalStateCount > stateCount
+            || autoGenerateCount > 0
             || (batchIndex > 0 && batchIndex * batchSize >= stateCount);
-        var statesInBatch = partialPayload
-            ? stateCount
-            : Math.Min(batchSize, Math.Max(0, stateCount - batchIndex * batchSize));
+        var statesInBatch = isPartialOrGenerated
+            ? Math.Min(batchSize, Math.Max(0, grandTotal - batchIndex * batchSize))
+            : partialPayload
+                ? stateCount
+                : Math.Min(batchSize, Math.Max(0, stateCount - batchIndex * batchSize));
         var readTimeoutMs = McpConstants.ComputeStateManagerReadTimeoutMs(statesInBatch, batchIndex);
 
         return await _pipeClient.CreateStateManagerAsync(
             managerName, groupName, groupProperty, states,
             bindNodePath, mode, confirmLargeBatch, batchIndex, batchSize, strategy,
-            readTimeoutMs, totalStateCount);
+            readTimeoutMs, totalStateCount, autoGenerateCount);
     }
 
     private async Task<string> ExecuteGetStatusAsync()
