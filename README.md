@@ -1,14 +1,15 @@
 # Kanzi MCP Server
 
-通过 [Model Context Protocol (MCP)](https://modelcontextprotocol.io/) 让 AI 助手（Claude Code、Cursor 等）直接查询和操作 **Kanzi Studio** 项目：查节点、改属性、创建/删除节点、导入资源、审计绑定等。
+通过 [Model Context Protocol (MCP)](https://modelcontextprotocol.io/) 让 AI 助手（Claude Code、Cursor 等）直接查询和操作 **Kanzi Studio** 项目：查节点、改属性、创建/删除节点、导入资源、审计绑定、创建状态机等。
 
-> **当前状态（2026-06）**：MCP 全链路已跑通。Server 与 Plugin 之间使用 **TCP `127.0.0.1:9595`** 通信（类名仍保留 `Pipe` 前缀，实际已是 TCP）。
+> **当前状态（2026-06）**：MCP 全链路已跑通。Server 与 Plugin 之间使用 **TCP `127.0.0.1:9595`** 通信（类名仍保留 `Pipe` 前缀，实际已是 TCP）。共 **20 个 MCP 工具**，插件业务层已拆分为 **partial class** 多文件结构，便于维护与扩展。
 
 ---
 
 ## 目录
 
 - [架构概览](#架构概览)
+- [关键技术](#关键技术)
 - [代码框架](#代码框架)
 - [实现原理](#实现原理)
 - [MCP 工具清单](#mcp-工具清单)
@@ -18,7 +19,7 @@
 - [使用方法](#使用方法)
 - [测试与调试](#测试与调试)
 - [故障排查](#故障排查)
-- [扩展开发](#扩展开发)
+- [扩展开发与可扩展性](#扩展开发与可扩展性)
 - [可选：OSS 远程桥接](#可选oss-远程桥接)
 
 ---
@@ -31,7 +32,7 @@
 ┌──────────────────────────────────────────────────────────────────┐
 │  AI 客户端                                                        │
 │  Claude Code / Cursor / 其他 MCP Client                          │
-│  通信方式: JSON-RPC 2.0 over stdin/stdout                        │
+│  通信方式: JSON-RPC 2.0 over stdin/stdout（MCP 2024-11-05）     │
 └────────────────────────────┬─────────────────────────────────────┘
                              │
                              ▼
@@ -44,9 +45,9 @@
                              ▼
 ┌──────────────────────────────────────────────────────────────────┐
 │  PluginKanziMCP.dll（Kanzi Studio 进程内，.NET Framework 4.8）    │
-│  KanziMcpPlugin → KanziTcpServer → KanziService                  │
+│  KanziMcpPlugin → KanziTcpServer → KanziService (partial)        │
 └────────────────────────────┬─────────────────────────────────────┘
-                             │  PluginInterface API
+                             │  PluginInterface API（100% 反射）
                              ▼
 ┌──────────────────────────────────────────────────────────────────┐
 │  Kanzi Studio / Kanzi Engine                                     │
@@ -59,8 +60,26 @@
 |----|------|
 | 双进程隔离 | MCP Server 是独立 exe，不依赖 Kanzi 进程；Kanzi 崩溃不影响 AI 客户端 |
 | TCP 而非 Named Pipe | 绕过跨进程安全上下文限制，固定端口 `9595` |
-| preview / apply | 改属性、删节点等操作支持预览模式，避免 AI 误改项目 |
+| 纯反射访问 Kanzi | 除 `PluginInterface.dll` 外无 Kanzi SDK 编译依赖，便于适配多版本 |
+| preview / apply | 改属性、删节点、创建状态机等操作支持预览模式，避免 AI 误改项目 |
+| 分批执行 | 大批量状态机创建支持 `batchIndex` / `autoGenerateCount`，避免 UI 阻塞 |
 | stderr 日志 | 所有调试日志写 stderr，stdout 只输出 JSON，符合 MCP 规范 |
+
+---
+
+## 关键技术
+
+| 领域 | 技术选型 | 说明 |
+|------|----------|------|
+| **MCP 协议** | JSON-RPC 2.0 over stdio | 协议版本 `2024-11-05`；支持 `initialize`、`tools/list`、`tools/call` |
+| **MCP Server** | .NET 10 (C# 12) | 自包含发布 `win-x64`，AI 客户端 fork 启动，无需预装运行时 |
+| **Kanzi 插件** | .NET Framework 4.8 (C# 7.3) | MEF `[Export]` 加载；WPF 侧边栏 `KanziMcpWindow` |
+| **Kanzi 集成** | 反射 + `PluginInterface.dll` | 多路 fallback 策略访问 `ActiveProject`、节点树、属性、绑定等 |
+| **进程间通信** | TCP localhost:9595 | 行分隔 JSON：`{method, args}` → `{result}` / `{error}` |
+| **序列化** | `System.Text.Json` | Server 与 Plugin 均使用 camelCase；Plugin 侧手动 bundled DLL |
+| **线程模型** | UI 线程调度 | Plugin 捕获 `SynchronizationContext`，Kanzi API 调用回到 Studio UI 线程 |
+| **可靠性** | 懒连接 + 重试 + 超时 | 连接重试 2 次；请求断线重连；读超时 120s（Server）/ 600s（Plugin 大批量） |
+| **远程方案** | 阿里云 OSS + Python | `kanzi_mcp_proxy.py` ↔ `oss_bridge_daemon.py`，非核心可选组件 |
 
 ---
 
@@ -81,7 +100,7 @@ kanziMcpServer/
 │   ├── Program.cs                  # 入口：stdin/stdout 主循环
 │   ├── Handlers/
 │   │   ├── McpProtocolHandler.cs   # JSON-RPC 协议路由
-│   │   └── ToolHandler.cs          # 17 个 MCP 工具定义与执行
+│   │   └── ToolHandler.cs          # 20 个 MCP 工具定义与执行
 │   ├── Services/
 │   │   └── KanziPipeClient.cs      # TCP 客户端（发/收 JSON）
 │   └── Models/
@@ -92,12 +111,27 @@ kanziMcpServer/
 │   ├── KanziMcpPlugin.cs           # MEF 入口，启动 TCP 服务
 │   ├── KanziMcpWindow.cs           # Studio 侧边栏 UI
 │   ├── PipeServer/
-│   │   └── KanziPipeServer.cs      # KanziTcpServer + 兼容别名
+│   │   └── KanziPipeServer.cs      # KanziTcpServer + 兼容别名 KanziPipeServer
 │   ├── Services/
-│   │   ├── KanziService.cs         # 核心业务（7000+ 行）
-│   │   └── KanziApiDumper.cs       # 启动时 API 反射导出（调试）
+│   │   ├── KanziService.cs         # partial 主文件（Studio 注入、共享状态）
+│   │   ├── KanziService.Reflection.cs      # 反射辅助（GetActiveProject 等）
+│   │   ├── KanziService.Nodes.Query.cs     # 节点查询 / 搜索 / 树
+│   │   ├── KanziService.Nodes.Mutate.cs    # 节点创建 / 删除
+│   │   ├── KanziService.Properties.cs      # 属性读写 / 批量设置
+│   │   ├── KanziService.CustomProperties.cs # CustomEnumProperty 创建/更新
+│   │   ├── KanziService.StateManager.cs    # StateManager 分批创建
+│   │   ├── KanziService.Audit.cs           # 四类审计工具
+│   │   ├── KanziService.Resources.cs       # 资源导入 / 诊断
+│   │   ├── KanziService.Status.cs          # 连接与项目状态
+│   │   ├── KanziService.Helpers.cs         # 序列化 / 日志 / 参数解析
+│   │   ├── KanziApiDumper.cs               # 启动时 API 反射导出（调试）
+│   │   └── Models/
+│   │       ├── NodeFilter.cs
+│   │       └── PropertyMetadata.cs
 │   └── lib/                        # System.Text.Json 等依赖 DLL
 │
+├── kanzi_mcp_proxy.py              # OSS 远程 MCP 代理（可选）
+├── oss_bridge_daemon.py            # Kanzi 机器 OSS 桥接守护进程（可选）
 ├── test_mcp_client.py              # 交互式 MCP 测试客户端
 ├── analyze_plugin_*.py             # PluginInterface 分析脚本
 └── .mcp.json                       # 项目级 MCP 配置（Claude Code）
@@ -113,7 +147,23 @@ kanziMcpServer/
 | 传输 | `KanziPipeClient.cs` | TCP 连接、重试、超时、`SendRequestAsync` |
 | 插件入口 | `KanziMcpPlugin.cs` | MEF `[Export]`，Initialize 时启动 TCP Server |
 | TCP 服务 | `KanziPipeServer.cs` | 监听 9595，路由 `method` 到 KanziService |
-| 业务 | `KanziService.cs` | 反射调用 Kanzi API，实现所有工具逻辑 |
+| 业务 | `KanziService.*.cs` | 反射调用 Kanzi API，按领域拆分的 partial class |
+
+### KanziService 模块划分
+
+`KanziService` 采用 **partial class** 按职责拆分，新增功能时优先放入对应文件，避免单文件膨胀：
+
+| 文件 | 职责 | 对应 MCP 工具 / Pipe method |
+|------|------|-------------------------------|
+| `Nodes.Query.cs` | 节点查询、树、搜索 | `query_nodes`, `get_node_tree`, `search_nodes`, `list_node_types` |
+| `Nodes.Mutate.cs` | 节点 CRUD | `create_node`, `delete_node` |
+| `Properties.cs` | 属性读写 | `set_property`, `batch_set_property`, `get_property_metadata` |
+| `CustomProperties.cs` | CustomEnum 属性 | `upsert_custom_enum_property` |
+| `StateManager.cs` | 状态机创建 | `create_state_manager` |
+| `Audit.cs` | 项目审计 | `audit_*` 系列 |
+| `Resources.cs` | 资源导入/诊断 | `import_image`, `import_fbx`, `doctor_resource` |
+| `Reflection.cs` | 通用反射工具 | 被各模块内部调用 |
+| `Helpers.cs` | JSON 序列化、日志 | 被各模块内部调用 |
 
 ---
 
@@ -127,7 +177,7 @@ AI 客户端连接后会按 MCP 规范依次发送：
 客户端                          KanziMcpServer
   │── initialize ──────────────►│  返回 protocolVersion、capabilities、instructions
   │── initialized ─────────────►│  确认
-  │── tools/list ──────────────►│  返回 17 个 kanzi_* 工具定义（含 inputSchema）
+  │── tools/list ──────────────►│  返回 20 个 kanzi_* 工具定义（含 inputSchema）
   │── tools/call ──────────────►│  执行具体工具，返回 content + isError
 ```
 
@@ -160,8 +210,8 @@ AI 客户端连接后会按 MCP 规范依次发送：
 
 ### 3. TCP 协议格式（Server ↔ Plugin）
 
-- **地址**：`127.0.0.1:9595`
-- **格式**：每行一条 JSON，UTF-8 无 BOM，换行分隔
+- **地址**：`127.0.0.1:9595`（可通过 `tcp:PORT` 或 `--pipe tcp:PORT` 修改）
+- **格式**：每行一条 JSON，UTF-8 无 BOM，换行分隔（JSON 内禁止换行）
 - **请求**：`{"method":"query_nodes","args":{...}}`
 - **成功响应**：`{"result": ...}`
 - **失败响应**：`{"error":"错误信息"}`
@@ -173,9 +223,25 @@ AI 客户端连接后会按 MCP 规范依次发送：
 | 懒连接 | `KanziPipeClient` | 启动时后台连 TCP，失败不阻塞；首次请求再连 |
 | 连接重试 | `ConnectAsync` | 最多 2 次，间隔 2–3 秒 |
 | 请求重试 | `SendRequestAsync` | 超时/断线后重连，指数退避 2s/4s |
-| 读超时 | 默认 120s | 复杂反射查询可能较慢 |
+| 读超时 | Server 120s / Plugin 600s | 复杂反射查询与大批量状态机创建 |
+| UI 线程调度 | `KanziTcpServer` | 捕获 Studio UI 线程上下文，Kanzi API 在正确线程执行 |
+| 日志轮转 | Plugin | `KanziMcpPlugin.log` 超过 1MB 自动截断 |
 
-### 5. 日志位置
+### 5. 反射策略（KanziService 核心）
+
+Kanzi Studio 未公开完整 SDK，所有业务通过反射实现，并采用多路 fallback：
+
+| 操作 | 策略 |
+|------|------|
+| 获取当前项目 | 5 路查找：`FlattenHierarchy` → 继承链 → 接口 → `Project` 属性 → 扫描 |
+| 按路径找节点 | 路径拆分 + `Children` 遍历（无 `GetProjectItem(string)` 直接 API） |
+| 读取属性值 | `DynamicProperty.Value` → 直接属性 → Indexer，共 5 策略 |
+| 创建节点 | 4 种创建方式 fallback |
+| 序列化 | `SafeSerialize` 处理 DBNull、循环引用、不可序列化类型 |
+
+启动时 `KanziApiDumper` 会将 Studio 真实 API 面导出到 `C:\temp\KanziApiDump.txt`，便于调试新版本 Kanzi。
+
+### 6. 日志位置
 
 | 日志 | 路径 | 内容 |
 |------|------|------|
@@ -187,7 +253,7 @@ AI 客户端连接后会按 MCP 规范依次发送：
 
 ## MCP 工具清单
 
-共 **17 个工具**，均在 `ToolHandler.GetToolDefinitions()` 中注册。
+共 **20 个工具**，均在 `ToolHandler.GetToolDefinitions()` 中注册。
 
 ### 查询类
 
@@ -222,6 +288,20 @@ AI 客户端连接后会按 MCP 规范依次发送：
 | `kanzi_import_fbx` | 导入 FBX 模型 |
 | `kanzi_doctor_resource` | 诊断未使用的 Image/Texture |
 
+### 自定义属性与状态机
+
+| 工具名 | 说明 |
+|--------|------|
+| `kanzi_upsert_custom_enum_property` | 创建或更新 CustomEnumProperty（状态组控制器属性） |
+| `kanzi_create_state_manager` | 创建 StateManager + StateGroup + States + StateObjects，支持分批 |
+
+**状态机典型工作流：**
+
+1. 先调用 `kanzi_upsert_custom_enum_property` 确保 `groupProperty` 存在
+2. 用 `kanzi_create_state_manager` + `mode=preview` 查看分批计划
+3. 大批量：`autoGenerateCount` + 1 个模板（字符串可用 `{0}` 占位），`batchSize=12~16`，循环 `batchIndex` + `mode=apply`
+4. 超过 200 个 state 需设 `confirmLargeBatch=true`；建议单组不超过 500，过多拆多个 StateGroup
+
 ### 审计
 
 | 工具名 | 说明 |
@@ -248,7 +328,7 @@ AI 客户端连接后会按 MCP 规范依次发送：
 | 操作系统 | Windows（Kanzi Studio 仅支持 Windows） |
 | Kanzi Studio | 3.9.10（或其他版本，需对应 PluginInterface.dll） |
 | .NET SDK | .NET 10（编译 Server）；.NET Framework 4.8（编译 Plugin，通常随 VS 安装） |
-| Python 3 | 可选，用于 `test_mcp_client.py` 测试 |
+| Python 3 | 可选，用于 `test_mcp_client.py` 测试及 OSS 远程桥接 |
 
 ---
 
@@ -406,6 +486,10 @@ value={"r":1,"g":0,"b":0,"a":1}，mode="preview"
 
 # 确认无误后 apply
 mode 改为 apply 再执行一次
+
+# 创建状态机（先建枚举属性，再 preview 分批计划）
+用 kanzi_upsert_custom_enum_property 创建 PopState 枚举
+用 kanzi_create_state_manager preview 查看分批方案
 ```
 
 ### KanziMcpServer 命令行参数
@@ -453,23 +537,72 @@ Get-Content C:\temp\KanziMcpPlugin.log -Tail 50 -Wait
 | 现象 | 可能原因 | 处理 |
 |------|----------|------|
 | `Cannot connect to Kanzi TCP Server` | Studio 未启动或插件未加载 | 重启 Studio，检查 plugins 目录 DLL 是否齐全 |
-| 工具返回 timeout | 项目过大或 Kanzi 繁忙 | 增大 `KANZI_CONNECT_TIMEOUT`；查 `KanziMcpPlugin.log` |
+| 工具返回 timeout | 项目过大或 Kanzi 繁忙 | 增大超时；大批量状态机用分批；查 `KanziMcpPlugin.log` |
 | MCP 客户端看不到 kanzi 工具 | `.mcp.json` 路径错误或 exe 不存在 | 检查 `command` 绝对路径；手动运行 exe 测 stderr |
 | stdout 混入非 JSON | 误用 `Console.WriteLine` 打日志 | 日志必须写 stderr（代码已遵守） |
 | 插件加载失败 | 缺少 `lib/*.dll` | 将 `src/KanziMcpPlugin/lib/` 下所有 DLL 复制到 plugins 目录 |
 | `NETSDK1004` 找不到 assets 文件 | 删除了 `obj/` 但脚本用了 `--no-restore` | 使用最新 `publish.bat`（已含 restore 步骤），或手动 `dotnet restore` |
 | 9595 端口被占用 | 其他程序占用 | 修改 Server/Plugin 端口（需改代码常量）或释放端口 |
+| 状态机创建卡住 | 单次 apply 状态过多 | 减小 `batchSize`，用 `batchIndex` 循环；WPF 消息泵已内置但仍有上限 |
 
 ---
 
-## 扩展开发
+## 扩展开发与可扩展性
 
-### 添加新 MCP 工具（四步）
+### 添加新 MCP 工具（标准四步）
 
-1. **`KanziService.cs`**：实现业务方法，处理 `JsonElement args`，返回 JSON 字符串
-2. **`KanziPipeServer.cs`**：在 `ProcessRequest` 的 switch 中增加 `method` 分支
-3. **`KanziPipeClient.cs`**：增加公开方法，调用 `SendRequestAsync`
-4. **`ToolHandler.cs`**：增加 `GetXxxTool()` 定义 + `ExecuteXxxAsync` + switch 分支
+```
+ToolHandler.cs          ← MCP 工具 Schema + 参数解析 + ExecuteXxxAsync
+       ↓
+KanziPipeClient.cs      ← SendRequestAsync 封装
+       ↓ TCP
+KanziPipeServer.cs      ← ProcessRequest switch 增加 method 分支
+       ↓
+KanziService.*.cs       ← 业务实现（放入对应 partial 文件）
+```
+
+**命名约定：**
+
+| 层 | 命名 | 示例 |
+|----|------|------|
+| MCP 工具 | `kanzi_<verb>_<noun>` | `kanzi_query_nodes` |
+| Pipe method | `snake_case` | `query_nodes` |
+| 环境变量 | `KANZI_*` 前缀 | `KANZI_PIPE_NAME` |
+
+**Schema 约定：**
+
+- 可选参数用 `"default"` 而非放进 `required`
+- 修改类工具默认 `mode: "preview"`，`enum: ["preview", "apply"]`
+- 数组参数用 `"type": "array"` + `"items"`
+
+### 扩展 KanziService 的建议
+
+1. **优先新增 partial 文件**：如 `KanziService.Animations.cs`，而非继续膨胀单个文件
+2. **复用 Reflection / Helpers**：新 API 访问先查 `KanziApiDump.txt`，在 `Reflection.cs` 添加通用 helper
+3. **遵循 preview/apply 模式**：所有写操作先返回计划 JSON，apply 时再执行
+4. **大批量操作考虑分批**：参考 `StateManager.cs` 的 `batchIndex` / `autoGenerateCount` 协议
+5. **UI 线程**：耗时操作在 Plugin 侧通过 `SynchronizationContext` 或 `Dispatcher` 调度
+
+### 适配新 Kanzi 版本
+
+1. 将对应版本的 `PluginInterface.dll` 放入 `pluginInterface/kanziX.Y.Z/`
+2. 运行 `publish.bat X.Y.Z` 编译
+3. 启动 Studio 后检查 `KanziApiDump.txt`，对比 API 变化
+4. 按需在 `Reflection.cs` 或具体业务文件中增加 fallback 分支
+
+### 后续可扩展方向
+
+| 方向 | 说明 | 扩展入口 |
+|------|------|----------|
+| **MCP Resources** | 暴露项目快照、节点树为可读资源 | `McpProtocolHandler` 已有 `resources/list` 桩 |
+| **MCP Prompts** | 预置 Kanzi 开发工作流 prompt 模板 | 新增 `PromptHandler` |
+| **动画 / Timeline** | 操作 Animation Clip、Timeline | 新增 `KanziService.Animations.cs` |
+| **Prefab / 模板** | 批量实例化 Prefab、应用模板 | `Nodes.Mutate.cs` 扩展 |
+| **Undo / 事务** | 批量操作支持回滚 | Plugin 侧包装 Kanzi Undo API |
+| **多项目 / 多 Studio** | 同时连接多个 Kanzi 实例 | 扩展 TCP 为多端口或实例 ID 路由 |
+| **非 Windows 客户端** | AI 在 Mac/Linux，Kanzi 在 Windows | 已有 OSS 桥接方案，可演进为 WebSocket/gRPC |
+| **工具粒度** | 按场景组合高频操作 | 在 `ToolHandler` 增加 composite 工具 |
+| **配置化端口** | 运行时改端口无需改代码 | Plugin 读配置文件 / 环境变量 |
 
 ### 自定义 JSON-RPC 方法（非 tools/call）
 
@@ -491,7 +624,7 @@ Get-Content C:\temp\KanziMcpPlugin.log -Tail 50 -Wait
 | `oss_bridge_daemon.py` | Kanzi 机器 OSS → KanziMcpServer.exe |
 | `build_and_upload.bat` | 编译并上传到 OSS |
 
-本地开发直接使用 TCP 直连即可，无需 OSS 组件。
+本地开发直接使用 TCP 直连即可，无需 OSS 组件。远程模式下 `REQUEST_TIMEOUT` 默认 660s，需大于 Plugin 单批 apply 超时（600s）。
 
 ---
 
