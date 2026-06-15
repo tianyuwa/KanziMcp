@@ -276,6 +276,26 @@ namespace KanziMcpPlugin.Services
 
             if (result.Count == 0)
             {
+                // 策略3: Library 容器用 Items / ProjectItems（TextureLibrary 等）
+                foreach (var propName in new[] { "Items", "ProjectItems" })
+                {
+                    var itemsProp = type.GetProperty(propName, flags);
+                    if (itemsProp == null) continue;
+                    try
+                    {
+                        if (itemsProp.GetValue(projectItem) is IEnumerable items)
+                        {
+                            foreach (var item in items)
+                                result.Add(item);
+                            if (result.Count > 0) return result;
+                        }
+                    }
+                    catch (Exception ex) { Log($"GetChildren: {propName} failed: {ex.Message}"); }
+                }
+            }
+
+            if (result.Count == 0)
+            {
                 Log($"GetChildren: no children found on {type.Name}. " +
                     $"Available properties: {string.Join(", ", type.GetProperties(flags).Select(p => $"{p.Name}:{p.PropertyType.Name}"))}");
             }

@@ -143,6 +143,12 @@ if exist "%ROOT%test_mcp_client.py" (
     echo   test_mcp_client.py 已复制
 )
 
+REM 复制 MCP_Command_Use.md（测试指令手册）
+if exist "%ROOT%MCP_Command_Use.md" (
+    copy /Y "%ROOT%MCP_Command_Use.md" "%OUTPUT_DIR%\" >nul
+    echo   MCP_Command_Use.md 已复制
+)
+
 REM 复制 README.md
 if exist "%ROOT%README.md" (
     copy /Y "%ROOT%README.md" "%OUTPUT_DIR%\" >nul

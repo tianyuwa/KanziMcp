@@ -16,8 +16,7 @@
 //   - kanzi_set_node_property       : 设置节点属性（set/apply 双模式）
 //   - kanzi_batch_set_property      : 批量设置属性
 //   - kanzi_get_property_metadata   : 获取属性元数据
-//   - kanzi_audit_bindings         : 审计数据绑定
-//   - kanzi_audit_localization      : 审计本地化
+//   - kanzi_audit_bindings         : 审计/修改数据绑定
 //   - kanzi_audit_project_structure : 审计项目结构
 //   - kanzi_search_nodes            : 全文搜索节点（支持 Name/Path/Type/Text）
 // 依赖: KanziPipeClient（通过 Named Pipe 与 Kanzi Plugin 通信）
@@ -63,9 +62,7 @@ public class ToolHandler
             // ========== 审计工具 ==========
 
             GetAuditBindingsTool(),
-            GetAuditLocalizationTool(),
             GetAuditProjectStructureTool(),
-            GetAuditResourceReferencesTool(),
 
             // ========== 节点创建与删除 ==========
 
@@ -115,9 +112,9 @@ public class ToolHandler
 
                 // 审计工具
                 "kanzi_audit_bindings" => await ExecuteAuditBindingsAsync(args),
-                "kanzi_audit_localization" => await ExecuteAuditLocalizationAsync(args),
+                "kanzi_audit_localization" => ExecuteAuditLocalizationDeprecated(),
                 "kanzi_audit_project_structure" => await ExecuteAuditProjectStructureAsync(args),
-                "kanzi_audit_resource_references" => await ExecuteAuditResourceReferencesAsync(args),
+                "kanzi_audit_resource_references" => await ExecuteAuditResourceReferencesCompatAsync(args),
 
                 // 节点创建与删除
                 "kanzi_create_node" => await ExecuteCreateNodeAsync(args),
@@ -235,23 +232,13 @@ public class ToolHandler
     private static ToolDefinition GetAuditBindingsTool() => new()
     {
         Name = "kanzi_audit_bindings",
-        Description = "Audit all data bindings in the project. Find missing data sources, orphan bindings, and priority conflicts.",
+        Description = "Audit and optionally modify data bindings. Detects empty binding codes, duplicate codes across nodes, and unresolved target properties. Supports preview/apply binding code updates via modifications.",
         InputSchema = Schema(new[]
         {
             Prop("path", "string", "Root path to audit (default: entire project)"),
-            Prop("checkPriority", "boolean", "Check for priority conflicts", defaultValue: true),
-            Prop("findOrphans", "boolean", "Find orphan bindings", defaultValue: true),
-        })
-    };
-
-    private static ToolDefinition GetAuditLocalizationTool() => new()
-    {
-        Name = "kanzi_audit_localization",
-        Description = "Audit localization coverage. Find missing translations and inconsistent text keys.",
-        InputSchema = Schema(new[]
-        {
-            Prop("languages", "array", "Target languages to check"),
-            Prop("includeUntranslated", "boolean", "Include untranslated text nodes", defaultValue: true),
+            Prop("checkPriority", "boolean", "Check for duplicate binding codes across nodes", defaultValue: true),
+            Prop("findOrphans", "boolean", "Find bindings whose target property could not be resolved", defaultValue: true),
+            Prop("modifications", "array", "Optional binding updates: [{ nodePath, bindingIndex|property, code, mode: preview|apply }]"),
         })
     };
 
@@ -264,18 +251,6 @@ public class ToolHandler
             Prop("namingPattern", "string", "Regex pattern for naming convention"),
             Prop("checkDepth", "boolean", "Check for excessively deep nesting", defaultValue: true),
             Prop("checkNaming", "boolean", "Check naming conventions", defaultValue: true),
-        })
-    };
-
-    private static ToolDefinition GetAuditResourceReferencesTool() => new()
-    {
-        Name = "kanzi_audit_resource_references",
-        Description = "Audit resource references - find unused, broken, or orphaned resources (images, textures, materials).",
-        InputSchema = Schema(new[]
-        {
-            Prop("checkUnused", "boolean", "Find unused resources", defaultValue: true),
-            Prop("checkBroken", "boolean", "Find broken/missing resource references", defaultValue: true),
-            Prop("checkOrphaned", "boolean", "Find orphaned resource files", defaultValue: true),
         })
     };
 
@@ -325,13 +300,14 @@ public class ToolHandler
     private static ToolDefinition GetImportImageTool() => new()
     {
         Name = "kanzi_import_image",
-        Description = "Import an image file into the Kanzi resource library (Textures folder). Supported formats: PNG, JPG, BMP, etc.",
+        Description = "Import one or many image files into the Kanzi resource library (Textures folder). Supported formats: PNG, JPG, BMP, etc.",
         InputSchema = Schema(new[]
         {
-            Prop("filePath", "string", "Full path to the image file on your computer"),
-            Prop("resourceName", "string", "Optional name for the imported resource"),
+            Prop("filePath", "string", "Full path to a single image file (use filePaths for batch import)"),
+            Prop("filePaths", "array", "Batch import: array of full paths to image files"),
+            Prop("resourceName", "string", "Optional name for the imported resource (single filePath only)"),
             Prop("targetFolder", "string", "Target resource folder (default: 'Textures')", defaultValue: "Textures"),
-        }, required: new[] { "filePath" })
+        })
     };
 
     private static ToolDefinition GetImportFbxTool() => new()
@@ -349,11 +325,13 @@ public class ToolHandler
     private static ToolDefinition GetDoctorResourceTool() => new()
     {
         Name = "kanzi_doctor_resource",
-        Description = "Diagnose resource usage in the project. Find unused Image and Texture resources that can be safely removed to reduce project size.",
+        Description = "Diagnose project resources — find unused Image/Texture resources and optionally detect missing texture files on disk.",
         InputSchema = Schema(new[]
         {
             Prop("checkImages", "boolean", "Check for unused images", defaultValue: true),
             Prop("checkTextures", "boolean", "Check for unused textures", defaultValue: true),
+            Prop("checkBroken", "boolean", "Check texture source files exist on disk", defaultValue: false),
+            Prop("resourceFolders", "array", "Resource library folders to scan (default: [\"Textures\"])"),
         })
     };
 
@@ -523,25 +501,25 @@ Usage order:
 
     private async Task<string> ExecuteAuditBindingsAsync(JsonElement args)
     {
-        var path = args.TryGetProperty("path", out var p) ? p.GetString() : null;
-        var checkPriority = args.TryGetProperty("checkPriority", out var cp) && cp.GetBoolean();
-        var findOrphans = args.TryGetProperty("findOrphans", out var fo) && fo.GetBoolean();
-
-        return await _pipeClient.AuditBindingsAsync(path, checkPriority, findOrphans);
+        return await _pipeClient.AuditBindingsAsync(args);
     }
 
-    private async Task<string> ExecuteAuditLocalizationAsync(JsonElement args)
-    {
-        var languages = new List<string>();
-        if (args.TryGetProperty("languages", out var langEl))
-        {
-            foreach (var lang in langEl.EnumerateArray())
-            {
-                languages.Add(lang.GetString() ?? "");
-            }
-        }
+    private static string ExecuteAuditLocalizationDeprecated()
+        => AuditCompatMapper.BuildLocalizationDeprecatedJson();
 
-        return await _pipeClient.AuditLocalizationAsync(languages);
+    private async Task<string> ExecuteAuditResourceReferencesCompatAsync(JsonElement args)
+    {
+        var checkUnused = !args.TryGetProperty("checkUnused", out var cu) || cu.GetBoolean();
+        var checkBroken = !args.TryGetProperty("checkBroken", out var cb) || cb.GetBoolean();
+        var checkOrphaned = !args.TryGetProperty("checkOrphaned", out var co) || co.GetBoolean();
+
+        var doctorJson = await _pipeClient.DoctorResourceAsync(
+            checkImages: checkUnused,
+            checkTextures: checkUnused,
+            checkBroken: checkBroken,
+            resourceFolders: new List<string> { "Textures" });
+
+        return AuditCompatMapper.MapDoctorJsonToResourceReferencesCompat(doctorJson, checkOrphaned);
     }
 
     private async Task<string> ExecuteAuditProjectStructureAsync(JsonElement args)
@@ -553,13 +531,27 @@ Usage order:
         return await _pipeClient.AuditProjectStructureAsync(namingPattern, checkDepth, checkNaming);
     }
 
-    private async Task<string> ExecuteAuditResourceReferencesAsync(JsonElement args)
+    private async Task<string> ExecuteDoctorResourceAsync(JsonElement args)
     {
-        var checkUnused = !args.TryGetProperty("checkUnused", out var cu) || cu.GetBoolean();
-        var checkBroken = !args.TryGetProperty("checkBroken", out var cb) || cb.GetBoolean();
-        var checkOrphaned = !args.TryGetProperty("checkOrphaned", out var co) || co.GetBoolean();
+        var checkImages = !args.TryGetProperty("checkImages", out var ci) || ci.GetBoolean();
+        var checkTextures = !args.TryGetProperty("checkTextures", out var ct) || ct.GetBoolean();
+        var checkBroken = args.TryGetProperty("checkBroken", out var cb) && cb.GetBoolean();
 
-        return await _pipeClient.AuditResourceReferencesAsync(checkUnused, checkBroken, checkOrphaned);
+        var resourceFolders = new List<string> { "Textures" };
+        if (args.TryGetProperty("resourceFolders", out var foldersEl) && foldersEl.ValueKind == JsonValueKind.Array)
+        {
+            resourceFolders.Clear();
+            foreach (var folder in foldersEl.EnumerateArray())
+            {
+                var name = folder.GetString();
+                if (!string.IsNullOrWhiteSpace(name))
+                    resourceFolders.Add(name);
+            }
+            if (resourceFolders.Count == 0)
+                resourceFolders.Add("Textures");
+        }
+
+        return await _pipeClient.DoctorResourceAsync(checkImages, checkTextures, checkBroken, resourceFolders);
     }
 
     private async Task<string> ExecuteCreateNodeAsync(JsonElement args)
@@ -596,14 +588,15 @@ Usage order:
 
     private async Task<string> ExecuteImportImageAsync(JsonElement args)
     {
-        var filePath = args.TryGetProperty("filePath", out var fp) ? fp.GetString() ?? "" : "";
-        var resourceName = args.TryGetProperty("resourceName", out var rn) ? rn.GetString() : null;
-        var targetFolder = args.TryGetProperty("targetFolder", out var tf) ? tf.GetString() ?? "Textures" : "Textures";
+        var hasFilePath = args.TryGetProperty("filePath", out var fp) && fp.ValueKind == JsonValueKind.String
+            && !string.IsNullOrWhiteSpace(fp.GetString());
+        var hasFilePaths = args.TryGetProperty("filePaths", out var fps) && fps.ValueKind == JsonValueKind.Array
+            && fps.EnumerateArray().Any(e => e.ValueKind == JsonValueKind.String && !string.IsNullOrWhiteSpace(e.GetString()));
 
-        if (string.IsNullOrEmpty(filePath))
-            throw new ArgumentException("Missing filePath parameter");
+        if (!hasFilePath && !hasFilePaths)
+            throw new ArgumentException("Missing filePath or filePaths parameter");
 
-        return await _pipeClient.ImportImageAsync(filePath, resourceName, targetFolder);
+        return await _pipeClient.ImportImageAsync(args);
     }
 
     private async Task<string> ExecuteImportFbxAsync(JsonElement args)
@@ -616,14 +609,6 @@ Usage order:
             throw new ArgumentException("Missing filePath parameter");
 
         return await _pipeClient.ImportFbxAsync(filePath, resourceName, targetFolder);
-    }
-
-    private async Task<string> ExecuteDoctorResourceAsync(JsonElement args)
-    {
-        var checkImages = !args.TryGetProperty("checkImages", out var ci) || ci.GetBoolean();
-        var checkTextures = !args.TryGetProperty("checkTextures", out var ct) || ct.GetBoolean();
-
-        return await _pipeClient.DoctorResourceAsync(checkImages, checkTextures);
     }
 
     private async Task<string> ExecuteUpsertCustomEnumPropertyAsync(JsonElement args)

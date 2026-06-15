@@ -18,6 +18,7 @@
 - [Claude / Cursor MCP 配置](#claude--cursor-mcp-配置)
 - [使用方法](#使用方法)
 - [测试与调试](#测试与调试)
+- [MCP 测试指令手册](MCP_Command_Use.md)
 - [故障排查](#故障排查)
 - [扩展开发与可扩展性](#扩展开发与可扩展性)
 - [可选：OSS 远程桥接](#可选oss-远程桥接)
@@ -286,7 +287,7 @@ Kanzi Studio 未公开完整 SDK，所有业务通过反射实现，并采用多
 |--------|------|
 | `kanzi_import_image` | 导入图片到资源库 |
 | `kanzi_import_fbx` | 导入 FBX 模型 |
-| `kanzi_doctor_resource` | 诊断未使用的 Image/Texture |
+| `kanzi_doctor_resource` | 诊断未使用的 Image/Texture，可选检测磁盘上缺失的纹理文件 |
 
 ### 自定义属性与状态机
 
@@ -306,10 +307,15 @@ Kanzi Studio 未公开完整 SDK，所有业务通过反射实现，并采用多
 
 | 工具名 | 说明 |
 |--------|------|
-| `kanzi_audit_bindings` | 审计数据绑定（孤儿、优先级冲突） |
-| `kanzi_audit_localization` | 审计多语言覆盖 |
+| `kanzi_audit_bindings` | 审计/修改数据绑定（空 code、重复 code、属性解析失败；支持 preview/apply 修改 binding code） |
 | `kanzi_audit_project_structure` | 审计命名规范、层级深度 |
-| `kanzi_audit_resource_references` | 审计资源引用（未用/损坏/孤儿） |
+
+### 已废弃工具（仍可通过名称调用，返回 compat 响应）
+
+| 工具名 | 替代方案 |
+|--------|----------|
+| `kanzi_audit_localization` | 已下线；请用 `kanzi_search_nodes`（searchIn: Text）或 `kanzi_query_nodes` |
+| `kanzi_audit_resource_references` | 转发至 `kanzi_doctor_resource`（响应含 `deprecated: true`） |
 
 ### 状态
 
@@ -508,6 +514,8 @@ KanziMcpServer [options]
 ---
 
 ## 测试与调试
+
+完整 MCP 工具测试用例（18 项，含自然语言指令、JSON 参数与验证点）见 **[MCP_Command_Use.md](MCP_Command_Use.md)**。
 
 ### 交互式测试客户端
 

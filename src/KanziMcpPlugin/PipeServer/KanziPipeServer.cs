@@ -307,9 +307,9 @@ namespace KanziMcpPlugin.PipeServer
 
                     // Audit
                     "audit_bindings" => _kanziService.AuditBindings(args),
-                    "audit_localization" => _kanziService.AuditLocalization(args),
+                    "audit_localization" => _kanziService.AuditLocalizationDeprecated(args),
                     "audit_project_structure" => _kanziService.AuditProjectStructure(args),
-                    "audit_resource_references" => _kanziService.AuditResourceReferences(args),
+                    "audit_resource_references" => _kanziService.AuditResourceReferencesCompat(args),
 
                     // Node creation and deletion
                     "create_node" => _kanziService.CreateNode(args),

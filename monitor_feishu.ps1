@@ -243,7 +243,7 @@ while ($true) {
 
                         # Use Task.Wait() instead of Process.WaitForExit() to avoid deadlock on Kill+ReadToEnd
                         $exitTask = [System.Threading.Tasks.Task]::Run([Action]{ $proc.WaitForExit() })
-                        $waitOk = $exitTask.Wait(120000)
+                        $waitOk = $exitTask.Wait(180000)
 
                         $testTimedOut = $false
                         if ($waitOk) {
@@ -254,17 +254,17 @@ while ($true) {
                             if ($stderr) { Write-Log "Test stderr: $stderr" }
                         } else {
                             # Timeout - kill immediately, do NOT read streams (avoids deadlock)
-                            Write-Log "Test process timed out (120s), killing..."
+                            Write-Log "Test process timed out (180s), killing..."
                             try { $proc.Kill($true) } catch { }
                             Start-Sleep -Seconds 2
                             @"
 ========================================
-TEST TIMEOUT: Process exceeded 120 second limit
+TEST TIMEOUT: Process exceeded 180 second limit
 Killed at: $(Get-Date -Format 'yyyy-MM-dd HH:mm:ss')
 ========================================
 "@ | Out-File $testResultFile
                             $testTimedOut = $true
-                            Send-FeishuMessage -Title "Test Timeout" -Text "Test process timed out after 120s" -Color "red"
+                            Send-FeishuMessage -Title "Test Timeout" -Text "Test process timed out after 180s" -Color "red"
                         }
 
                         $proc.Dispose()

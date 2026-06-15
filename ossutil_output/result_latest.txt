@@ -1,0 +1,444 @@
+﻿[Start] KanziMcpServer: C:\KanziMonitor\Build_MCP\KanziMcpServer\KanziMcpServer.exe
+  [Server] [KanziMcpServer] Starting v1.0.0...
+  [Server] [KanziMcpServer] Background connecting to KanziMcpPipe...
+  [Server] [KanziMcpServer] Ready. Waiting for requests...
+  [Server] [KanziMcpServer] Press Ctrl+C to exit
+  [Server] [KanziPipeClient] Connect attempt 1/2 to 127.0.0.1:9595...
+  [Server] [KanziPipeClient] Connected to 127.0.0.1:9595 on attempt 1
+  [Server] [KanziMcpServer] Background: connected to Kanzi
+[OK] KanziMcpServer started
+
+############################################################
+#  KanziMcpServer Auto Test (18 MCP tools + compat)
+############################################################
+
+==================================================
+Step1: MCP protocol handshake (initialize)
+==================================================
+  [Server] [KanziMcpServer] [72ms] {"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {"protocolVersion"
+  Server name: kanzi-mcp
+  Server version: 1.0.0
+  Protocol version: 2024-11-05
+  Server capabilities: {"tools": {}, "resources": {}, "prompts": {}}
+
+[OK] MCP handshake complete!
+  [PASS] MCP Handshake
+
+==================================================
+Step 2: List all MCP tools
+==================================================
+  [Server] [KanziMcpServer] [0ms] {"jsonrpc": "2.0", "id": 2, "method": "initialized"}
+  [Server] [KanziMcpServer] [28ms] {"jsonrpc": "2.0", "id": 3, "method": "tools/list"}
+
+  Total 18 tools (expected >= 18):
+
+  1. kanzi_query_nodes
+
+  2. kanzi_get_node_tree
+
+  3. kanzi_list_node_types
+
+  4. kanzi_get_binding_info
+
+  5. kanzi_set_node_property
+
+  6. kanzi_batch_set_property
+
+  7. kanzi_get_property_metadata
+
+  8. kanzi_audit_bindings
+
+  9. kanzi_audit_project_structure
+
+  10. kanzi_create_node
+
+  11. kanzi_delete_node
+
+  12. kanzi_import_image
+
+  13. kanzi_import_fbx
+
+  14. kanzi_doctor_resource
+
+  15. kanzi_upsert_custom_enum_property
+
+  16. kanzi_create_state_manager
+
+  17. kanzi_get_status
+
+  18. kanzi_search_nodes
+
+  [PASS] List tools
+
+----------------------------------------
+Check server status
+----------------------------------------
+  [Server] [KanziPipeClient] Sending: {"method":"get_status","args":null}
+  [Server] [KanziPipeClient] Sent, waiting for response (timeout: 120000ms)...
+  [Server] [KanziPipeClient] Received: {"result":{"success":true,"server":"KanziMcpPlugin","version":"1.0.0","projectOpen":true,"projectName":"Untitled","nodeCount":303,"kanziStudioConnected":true,"studioVersion":{"major":3,"minor":9,"buil
+  [Server] [KanziMcpServer] [183ms] {"jsonrpc": "2.0", "id": 4, "method": "tools/call", "params": {"name": "kanzi_ge
+  keys: ['pipe', 'kanzi']
+  [PASS] Server status
+
+--- Kanzi Studio tests (require Studio + open project) ---
+
+----------------------------------------
+Get node tree: Screens/Screen depth=3
+----------------------------------------
+  [Server] [KanziPipeClient] Sending: {"method":"get_node_tree","args":{"rootPath":"Screens/Screen","depth":3,"includeProperties":false}}
+  [Server] [KanziPipeClient] Sent, waiting for response (timeout: 120000ms)...
+  [Server] [KanziPipeClient] Received: {"result":{"success":true,"tree":{"path":"Screen","name":"Screen","type":"Screen","children":[{"path":"Screen/RootPage","name":"RootPage","type":"Page Host","children":[{"path":"Screen/RootPage/Page:
+  [Server] [KanziMcpServer] [27ms] {"jsonrpc": "2.0", "id": 5, "method": "tools/call", "params": {"name": "kanzi_ge
+  {"success": true}
+  [PASS] Get node tree
+
+----------------------------------------
+List node types
+----------------------------------------
+  [Server] [KanziPipeClient] Sending: {"method":"list_node_types","args":null}
+  [Server] [KanziPipeClient] Sent, waiting for response (timeout: 120000ms)...
+  [Server] [KanziPipeClient] Received: {"result":{"success":true,"nodeTypes":[{"type":"Node","displayName":"Node","category":"Basic"},{"type":"Node2D","displayName":"Node2D","category":"2D"},{"type":"Node3D","displayName":"Node3D","categor
+  [Server] [KanziMcpServer] [8ms] {"jsonrpc": "2.0", "id": 6, "method": "tools/call", "params": {"name": "kanzi_li
+  {"success": true, "count": 20}
+  [PASS] List node types
+
+----------------------------------------
+Search nodes: Text Block 2D (case sensitive)
+----------------------------------------
+  [Server] [KanziPipeClient] Sending: {"method":"search_nodes","args":{"searchText":"Text Block 2D","searchIn":["Name","Path","Type"],"caseSensitive":true}}
+  [Server] [KanziPipeClient] Sent, waiting for response (timeout: 120000ms)...
+  [Server] [KanziPipeClient] Received: {"result":{"success":true,"searchText":"Text Block 2D","searchIn":["Name","Path","Type"],"results":[{"path":"Screens/Screen/RootPage/Viewport 2D/Text Block 2D","name":"Text Block 2D","type":"Text Bloc
+  [Server] [KanziMcpServer] [92ms] {"jsonrpc": "2.0", "id": 7, "method": "tools/call", "params": {"name": "kanzi_se
+  {"success": true, "count": 5}
+  [PASS] Search nodes
+
+----------------------------------------
+Query nodes by type: Text Block 2D
+----------------------------------------
+  [Server] [KanziPipeClient] Sending: {"method":"query_nodes","args":{"type":"Text Block 2D","name":null,"path":null,"includeProperties":false,"includeBindings":false,"recursive":true,"maxDepth":10,"limit":50}}
+  [Server] [KanziPipeClient] Sent, waiting for response (timeout: 120000ms)...
+  [Server] [KanziPipeClient] Received: {"result":{"success":true,"projectName":"Untitled","nodes":[{"path":"Screens/Screen/RootPage/Viewport 2D/Text Block 2D","name":"Text Block 2D","type":"Text Block 2D"},{"path":"Screens/Screen/RootPage/
+  [Server] [KanziMcpServer] [76ms] {"jsonrpc": "2.0", "id": 8, "method": "tools/call", "params": {"name": "kanzi_qu
+  {"success": true, "count": 3}
+  [PASS] Query by type
+
+----------------------------------------
+Query node detail: Screens/Screen/RootPage/Viewport 2D/Text Block 2D_1
+----------------------------------------
+  [Server] [KanziPipeClient] Sending: {"method":"query_nodes","args":{"type":null,"name":null,"path":"Screens/Screen/RootPage/Viewport 2D/Text Block 2D_1","includeProperties":true,"includeBindings":true,"recursive":false,"maxDepth":10,"limit":1}}
+  [Server] [KanziPipeClient] Sent, waiting for response (timeout: 120000ms)...
+  [Server] [KanziPipeClient] Received: {"result":{"success":true,"projectName":"Untitled","nodes":[],"count":0,"totalMatched":0,"truncated":false}}
+  [Server] [KanziMcpServer] [1ms] {"jsonrpc": "2.0", "id": 9, "method": "tools/call", "params": {"name": "kanzi_qu
+  {"success": true, "count": 0}
+  [PASS] Query by path
+
+----------------------------------------
+Get binding info: Screens/Screen/RootPage/Viewport 2D/Text Block 2D_1
+----------------------------------------
+  [Server] [KanziPipeClient] Sending: {"method":"get_binding_info","args":{"path":"Screens/Screen/RootPage/Viewport 2D/Text Block 2D_1"}}
+  [Server] [KanziPipeClient] Sent, waiting for response (timeout: 120000ms)...
+  [Server] [KanziPipeClient] Received: {"result":{"success":true,"node":"Screens/Screen/RootPage/Viewport 2D/Text Block 2D_1","bindings":[{"property":"TextConcept.Text","code":"\u0022asdasda\u0022","mode":"OneWay"}]}}
+  [Server] [KanziMcpServer] [26ms] {"jsonrpc": "2.0", "id": 10, "method": "tools/call", "params": {"name": "kanzi_g
+  {"success": true}
+  [PASS] Get binding info
+
+----------------------------------------
+Property metadata: Text Block 2D
+----------------------------------------
+  [Server] [KanziPipeClient] Sending: {"method":"get_property_metadata","args":{"nodeType":"Text Block 2D"}}
+  [Server] [KanziPipeClient] Sent, waiting for response (timeout: 120000ms)...
+  [Server] [KanziPipeClient] Received: {"result":{"success":true,"nodeType":"Text Block 2D","properties":{"Opacity":{"name":"Opacity","type":"float","displayName":"Opacity","category":"Appearance","isReadOnly":false},"IsVisible":{"name":"I
+  [Server] [KanziMcpServer] [16ms] {"jsonrpc": "2.0", "id": 11, "method": "tools/call", "params": {"name": "kanzi_g
+  {"success": true}
+  [PASS] Property metadata
+
+----------------------------------------
+Set property preview: Screens/Screen.Name
+----------------------------------------
+  [Server] [KanziPipeClient] Sending: {"method":"set_property","args":{"path":"Screens/Screen","property":"Name","value":"TestScreen","mode":"preview","force":false}}
+  [Server] [KanziPipeClient] Sent, waiting for response (timeout: 120000ms)...
+  [Server] [KanziPipeClient] Received: {"result":{"success":true,"preview":true,"node":"Screens/Screen","nodeType":"ScreenPluginWrapper","property":"Name","oldValue":"Screen","newValue":"TestScreen"}}
+  [Server] [KanziMcpServer] [48ms] {"jsonrpc": "2.0", "id": 12, "method": "tools/call", "params": {"name": "kanzi_s
+  {"success": true}
+  [PASS] Set property (preview)
+
+----------------------------------------
+Set text preview: Screens/Screen/RootPage/Viewport 2D/Text Block 2D
+----------------------------------------
+  [Server] [KanziPipeClient] Sending: {"method":"set_property","args":{"path":"Screens/Screen/RootPage/Viewport 2D/Text Block 2D","property":"TextConcept.Text","value":"KanziMCP AutoTest","mode":"preview","force":false}}
+  [Server] [KanziPipeClient] Sent, waiting for response (timeout: 120000ms)...
+  [Server] [KanziPipeClient] Received: {"result":{"success":true,"preview":true,"node":"Screens/Screen/RootPage/Viewport 2D/Text Block 2D","nodeType":"TextBlock2DPluginWrapper","property":"TextConcept.Text","oldValue":null,"newValue":"Kanz
+  [Server] [KanziMcpServer] [5ms] {"jsonrpc": "2.0", "id": 13, "method": "tools/call", "params": {"name": "kanzi_s
+  {"success": true}
+  [PASS] Set text (preview)
+
+----------------------------------------
+Batch font size preview (FontStyleConcept.Size=150)
+----------------------------------------
+  [Server] [KanziPipeClient] Sending: {"method":"batch_set_property","args":{"filter":{"type":"Text Block 2D","name":null,"path":null,"includeProperties":false,"includeBindings":false,"recursive":true,"maxDepth":10,"limit":1000},"properties":{"FontStyleConcept.Size":{"type":"number","value":150,"r":null,"g":null,"b":null,"a":null,"x":null,"y":null,"z":null,"w":null,"isColor":false,"isVector":false}},"mode":"preview","ignoreReadOnly":false}}
+  [Server] [KanziPipeClient] Sent, waiting for response (timeout: 120000ms)...
+  [Server] [KanziPipeClient] Received: {"result":{"success":true,"preview":true,"totalNodes":3,"totalChanges":3,"changes":[{"node":"Screens/Screen/RootPage/Viewport 2D/Text Block 2D","nodeType":"Text Block 2D","property":"FontStyleConcept.
+  [Server] [KanziMcpServer] [511ms] {"jsonrpc": "2.0", "id": 14, "method": "tools/call", "params": {"name": "kanzi_b
+  {"success": true}
+  [PASS] Batch font size (preview)
+
+----------------------------------------
+Audit data bindings (path: entire project)
+----------------------------------------
+  [Server] [KanziPipeClient] Sending: {"method":"audit_bindings","args":{"checkPriority":true,"findOrphans":true}}
+  [Server] [KanziPipeClient] Sent, waiting for response (timeout: 120000ms)...
+  [Server] [KanziPipeClient] Received: {"result":{"success":true,"auditRoot":"(project root)","totalBindings":317,"issues":[{"type":"orphan","node":"Material Types/SmartVertexPhong","message":"Binding target property not found"},{"type":"o
+  [Server] [KanziMcpServer] [96ms] {"jsonrpc": "2.0", "id": 15, "method": "tools/call", "params": {"name": "kanzi_a
+{
+  "success": true,
+  "auditRoot": "(project root)",
+  "totalBindings": 317,
+  "issues": [
+    {
+      "type": "orphan",
+      "node": "Material Types/SmartVertexPhong",
+      "message": "Binding target property not found"
+    },
+    {
+      "type": "orphan",
+      "node": "Material Types/SmartVertexPhong",
+      "message": "Binding target property not found"
+    },
+    {
+      "type": "orphan",
+      "node": "Material Types/SmartVertexPhong",
+      "message": "Binding target property not found"
+    },
+    {
+      "type": "orphan",
+      "node": "Material Types/SmartVertexPhong",
+      "message": "Binding target property not found"
+    },
+    {
+      "type": "orphan",
+      "node": "Material Types/SmartVertexPhong",
+      "message": "Binding target property not found"
+    },
+    {
+      "type": "orphan",
+      "node": "Material Types/SmartVertexPhong",
+      "message": "Binding target property not found"
+    },
+    {
+      "type": "orphan",
+      "node": "Material Types/SmartVertexPhong",
+      "message": "Binding target property not found"
+    },
+    {
+      "type": "orphan",
+      "node": "Material Types/SmartVertexPhong",
+      "message": "Binding target property not found"
+    },
+    {
+      "type": "orphan",
+      "node": "Material Types/SmartVertexPhong",
+      "message": "Binding target property not found"
+    },
+    {
+      "type": "orphan",
+      "node": "Material Types/SmartVertexPhong",
+      "message": "Binding target property not found"
+    },
+    {
+      "type": "orphan",
+      "node": "Material Types/SmartVertexPhong",
+      "message": "Binding target property not found"
+    },
+    {
+      "type": "orphan",
+      "node": "Material Types/SmartVertexPhong",
+      "message": "Binding target property not found"
+    },
+    {
+      "type": "orphan",
+      "node": "Material Types/SmartVertexPhong",
+      "message": "Binding target property not found"
+    },
+    {
+      "type": "orphan",
+      "node": "Material Types/SmartVertexPhong",
+      "message": "Binding target property not found"
+    },
+    {
+      "type": "orphan",
+      "node": "Material Types/SmartVertexPhong",
+      "message": "Binding target property not found"
+    },
+    {
+      "type": "orphan",
+      "node": "Material Types/SmartVertexPhong",
+      "message": "Binding target property not found"
+    },
+    {
+      "type": "orphan",
+      "node": "Material Types/SmartVertexPhong",
+      "message": "Binding target property not found"
+    },
+    {
+      "type": "orphan",
+      "node": "Material Types/SmartVertexPhong",
+      "message": "Binding target property not found"
+    },
+    {
+      "type": "orphan",
+      "node": "Material Types/SmartVertexPhong",
+      "message": "Binding target property not found"
+    },
+    {
+      "type": "orphan",
+      "node": "Material Types/SmartVertexPhong",
+      "message": "Binding target property not found"
+    },
+    {
+      "type": "orphan",
+      "node": "Material Types/SmartVertexPhong",
+      "message": "Binding target property not fou
+  [PASS] Audit bindings
+
+----------------------------------------
+Audit project structure
+----------------------------------------
+  [Server] [KanziPipeClient] Sending: {"method":"audit_project_structure","args":{"namingPattern":"^[a-z][a-zA-Z0-9]*$","checkDepth":true,"checkNaming":true}}
+  [Server] [KanziPipeClient] Sent, waiting for response (timeout: 120000ms)...
+  [Server] [KanziPipeClient] Received: {"result":{"success":true,"totalNodes":303,"maxDepth":5,"issues":[{"type":"naming","path":"Animation Clips","name":"Animation Clips","message":"\u8282\u70B9\u540D\u79F0 \u0022Animation Clips\u0022 \u4
+  [Server] [KanziMcpServer] [84ms] {"jsonrpc": "2.0", "id": 16, "method": "tools/call", "params": {"name": "kanzi_a
+  {"success": true}
+  [PASS] Audit project structure
+
+----------------------------------------
+Doctor resource
+----------------------------------------
+  [Server] [KanziPipeClient] Sending: {"method":"doctor_resource","args":{"checkImages":true,"checkTextures":true,"checkBroken":false,"resourceFolders":["Textures"]}}
+  [Server] [KanziPipeClient] Sent, waiting for response (timeout: 120000ms)...
+  [Server] [KanziPipeClient] Received: {"result":{"success":true,"totalUsedResources":0,"unusedImages":[],"unusedImageCount":0,"unusedTextures":[],"unusedTextureCount":0,"brokenReferences":[],"brokenReferenceCount":0,"scannedFolders":["Tex
+  [Server] [KanziMcpServer] [188ms] {"jsonrpc": "2.0", "id": 17, "method": "tools/call", "params": {"name": "kanzi_d
+  {"success": true}
+  [PASS] Doctor resource
+
+----------------------------------------
+Batch set text preview
+----------------------------------------
+  [Server] [KanziPipeClient] Sending: {"method":"batch_set_property","args":{"filter":{"type":"Text Block 2D","name":null,"path":null,"includeProperties":false,"includeBindings":false,"recursive":true,"maxDepth":10,"limit":1000},"properties":{"TextConcept.Text":{"type":"string","value":"all test","r":null,"g":null,"b":null,"a":null,"x":null,"y":null,"z":null,"w":null,"isColor":false,"isVector":false}},"mode":"preview","ignoreReadOnly":false}}
+  [Server] [KanziPipeClient] Sent, waiting for response (timeout: 120000ms)...
+  [Server] [KanziPipeClient] Received: {"result":{"success":true,"preview":true,"totalNodes":3,"totalChanges":3,"changes":[{"node":"Screens/Screen/RootPage/Viewport 2D/Text Block 2D","nodeType":"Text Block 2D","property":"TextConcept.Text"
+  [Server] [KanziMcpServer] [281ms] {"jsonrpc": "2.0", "id": 18, "method": "tools/call", "params": {"name": "kanzi_b
+  {"success": true}
+  [PASS] Batch set property (preview)
+
+----------------------------------------
+Create node: Text Block 3D under Screens/Screen/RootPage/Viewport 2D/Scene
+----------------------------------------
+  [Server] [KanziPipeClient] Sending: {"method":"create_node","args":{"parentPath":"Screens/Screen/RootPage/Viewport 2D/Scene","nodeType":"Text Block 3D","nodeName":"MCP_AutoTest_3D","properties":null}}
+  [Server] [KanziPipeClient] Sent, waiting for response (timeout: 120000ms)...
+  [Server] [KanziPipeClient] Received: {"error":"Parent node not found: Screens/Screen/RootPage/Viewport 2D/Scene"}
+  [Server] [KanziMcpServer] [27ms] {"jsonrpc": "2.0", "id": 19, "method": "tools/call", "params": {"name": "kanzi_c
+[ERROR] Server returned error: �ڲ�����: Kanzi Error: Parent node not found: Screens/Screen/RootPage/Viewport 2D/Scene
+  [FAIL] No JSON response
+  [FAIL] Create node
+
+----------------------------------------
+Delete node preview: Screens/Screen/RootPage/Viewport 2D/Test_Text_2D
+----------------------------------------
+  [Server] [KanziPipeClient] Sending: {"method":"delete_node","args":{"path":"Screens/Screen/RootPage/Viewport 2D/Test_Text_2D","mode":"preview"}}
+  [Server] [KanziPipeClient] Sent, waiting for response (timeout: 120000ms)...
+  [Server] [KanziPipeClient] Received: {"error":"\u8282\u70B9\u672A\u627E\u5230: Screens/Screen/RootPage/Viewport 2D/Test_Text_2D"}
+  [Server] [KanziMcpServer] [9ms] {"jsonrpc": "2.0", "id": 20, "method": "tools/call", "params": {"name": "kanzi_d
+[ERROR] Server returned error: �ڲ�����: Kanzi Error: �ڵ�δ�ҵ�: Screens/Screen/RootPage/Viewport 2D/Test_Text_2D
+  [FAIL] No JSON response
+  [FAIL] Delete node (preview)
+
+----------------------------------------
+Import image: E:/wangtianyu/localization_Test/Image/L3_NCA_STANDBY.png
+----------------------------------------
+  [Server] [KanziPipeClient] Sending: {"method":"import_image","args":{"filePath":"E:/wangtianyu/localization_Test/Image/L3_NCA_STANDBY.png","resourceName":null,"targetFolder":"Textures"}}
+  [Server] [KanziPipeClient] Sent, waiting for response (timeout: 120000ms)...
+  [Server] [KanziPipeClient] Received: {"error":"Import failed: no suitable import method found for \u0027L3_NCA_STANDBY.png\u0027. Kanzi Studio requires UI interaction for importing images. Please import the image manually via Kanzi Studi
+  [Server] [KanziMcpServer] [23ms] {"jsonrpc": "2.0", "id": 21, "method": "tools/call", "params": {"name": "kanzi_i
+[ERROR] Server returned error: �ڲ�����: Kanzi Error: Import failed: no suitable import method found for 'L3_NCA_STANDBY.png'. Kanzi Studio requires UI interaction for importing images. Please import the image manually via Kanzi Studio (right-click Textures folder -> Import -> Images).
+  [FAIL] No JSON response
+  [FAIL] Import image
+
+----------------------------------------
+Upsert custom enum: MCP_AutoTest_Enum (mode=preview)
+----------------------------------------
+  [Server] [KanziPipeClient] Sending: {"method":"upsert_custom_enum_property","args":{"name":"MCP_AutoTest_Enum","options":[{"name":"Test1","value":1},{"name":"Test2","value":2}],"displayName":"MCP AutoTest Enum","category":null,"mode":"preview"}}
+  [Server] [KanziPipeClient] Sent, waiting for response (timeout: 120000ms)...
+  [Server] [KanziPipeClient] Received: {"result":{"preview":true,"action":"create","name":"MCP_AutoTest_Enum","displayName":"MCP AutoTest Enum","category":"","options":[{"name":"Test1","value":1},{"name":"Test2","value":2}]}}
+  [Server] [KanziMcpServer] [22ms] {"jsonrpc": "2.0", "id": 22, "method": "tools/call", "params": {"name": "kanzi_u
+  keys: ['preview', 'action', 'name', 'displayName', 'category', 'options']
+  [PASS] Upsert enum (preview)
+
+----------------------------------------
+Create state manager: MCP_AutoTest_Manager/MCP_AutoTest_Group (mode=preview)
+----------------------------------------
+  [Server] [KanziPipeClient] Sending: {"method":"create_state_manager","args":{"managerName":"MCP_AutoTest_Manager","groupName":"MCP_AutoTest_Group","groupProperty":"warnvalue","states":[{"stateName":"warn_{0}","statePropertyValue":1,"objects":[{"nodeName":"Text Block 2D","nodePath":"Screens/Screen/RootPage/Viewport 2D/Text Block 2D","properties":{"TextConcept.Text":"warning_{0}"}}]}],"bindNodePath":"Screens/Screen/RootPage/Viewport 2D","mode":"preview","confirmLargeBatch":false,"batchIndex":0,"batchSize":12,"strategy":"auto","totalStateCount":0,"autoGenerateCount":3}}
+  [Server] [KanziPipeClient] Sent, waiting for response (timeout: 120000ms)...
+  [Server] [KanziPipeClient] Received: {"result":{"preview":true,"managerName":"MCP_AutoTest_Manager","groupName":"MCP_AutoTest_Group","stateCount":3,"totalBatches":1,"batchPlan":{"stateCount":3,"stateObjectCount":1,"propertyWriteCount":1,
+  [Server] [KanziMcpServer] [46ms] {"jsonrpc": "2.0", "id": 23, "method": "tools/call", "params": {"name": "kanzi_c
+  {"totalBatches": 1}
+  [PASS] State manager (preview)
+
+--- Deprecated compat tools ---
+
+----------------------------------------
+Audit localization (deprecated compat)
+----------------------------------------
+  [Server] [KanziMcpServer] [3ms] {"jsonrpc": "2.0", "id": 24, "method": "tools/call", "params": {"name": "kanzi_a
+{
+  "success": false,
+  "deprecated": true,
+  "removedIn": "2.0",
+  "message": "Localization audit was removed: core translation checks were never implemented reliably.",
+  "alternatives": [
+    "kanzi_search_nodes (searchIn: Text)",
+    "kanzi_query_nodes"
+  ]
+}
+  [PASS] Audit localization (deprecated)
+
+----------------------------------------
+Audit resource references (deprecated compat)
+----------------------------------------
+  [Server] [KanziPipeClient] Sending: {"method":"doctor_resource","args":{"checkImages":true,"checkTextures":true,"checkBroken":true,"resourceFolders":["Textures"]}}
+  [Server] [KanziPipeClient] Sent, waiting for response (timeout: 120000ms)...
+  [Server] [KanziPipeClient] Received: {"result":{"success":true,"totalUsedResources":0,"unusedImages":[],"unusedImageCount":0,"unusedTextures":[],"unusedTextureCount":0,"brokenReferences":[],"brokenReferenceCount":0,"scannedFolders":["Tex
+  [Server] [KanziMcpServer] [105ms] {"jsonrpc": "2.0", "id": 25, "method": "tools/call", "params": {"name": "kanzi_a
+{
+  "success": true,
+  "deprecated": true,
+  "redirectTo": "kanzi_doctor_resource",
+  "unusedResources": [],
+  "brokenReferences": [],
+  "orphanedResources": [],
+  "summary": {
+    "totalResources": 0,
+    "totalUnused": 0,
+    "totalBroken": 0,
+    "totalOrphaned": 0,
+    "totalReferences": 0,
+    "detectedResourceTypes": []
+  },
+  "recommendations": [
+    "Scanned resources via kanzi_doctor_resource; no unused or broken items found."
+  ]
+}
+  [PASS] Audit resource references (deprecated)
+
+############################################################
+#  Automated test complete!
+############################################################
+
+Core Tests: 3/3 passed
+Kanzi Tests: 18/21 passed
+
+TEST_RESULT: PASS
+Note: MCP Server core functionality is working.
+      Kanzi tests: 18/21 passed (requires Kanzi Studio).
+
+[INFO] Server stopped
+

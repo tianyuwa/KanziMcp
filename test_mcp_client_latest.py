@@ -458,7 +458,7 @@ class McpTestClient:
             print("  [失败] 获取属性元数据失败")
             return False
 
-    def audit_bindings(self, path=None):
+    def audit_bindings(self, path=None, modifications=None):
         """审计数据绑定"""
         print(f"\n{'-'*40}")
         print(f"审计数据绑定 (path: {path or '全项目'})")
@@ -470,30 +470,34 @@ class McpTestClient:
         }
         if path:
             args["path"] = path
+        if modifications:
+            args["modifications"] = modifications
 
         result = self.send_request("tools/call", {
             "name": "kanzi_audit_bindings",
             "arguments": args
         })
 
-        if result:
-            content = result.get("content", [])
-            for item in content:
-                text = item.get("text", "")
-                try:
-                    parsed = json.loads(text)
-                    print(json.dumps(parsed, ensure_ascii=False, indent=2)[:3000])
-                except:
-                    print(text[:3000])
-            return True
-        else:
-            print("  [失败] 审计绑定失败")
-            return False
+        parsed = self._extract_json_result(result)
+        if parsed is not None:
+            print(json.dumps(parsed, ensure_ascii=False, indent=2)[:3000])
+            return parsed.get("success", True) is not False
+        print("  [失败] 审计绑定失败")
+        return False
+
+    def audit_bindings_modify_preview(self, node_path, binding_index=0, code="{PreviewCode}"):
+        """预览修改 binding code（不 apply）"""
+        return self.audit_bindings(modifications=[{
+            "nodePath": node_path,
+            "bindingIndex": binding_index,
+            "code": code,
+            "mode": "preview"
+        }])
 
     def audit_localization(self, languages=None):
-        """审计本地化"""
+        """审计本地化（已废弃 compat 桩）"""
         print(f"\n{'-'*40}")
-        print(f"审计本地化")
+        print(f"审计本地化 (deprecated compat)")
         print("-"*40)
 
         args = {
@@ -506,19 +510,12 @@ class McpTestClient:
             "arguments": args
         })
 
-        if result:
-            content = result.get("content", [])
-            for item in content:
-                text = item.get("text", "")
-                try:
-                    parsed = json.loads(text)
-                    print(json.dumps(parsed, ensure_ascii=False, indent=2)[:3000])
-                except:
-                    print(text[:3000])
-            return True
-        else:
-            print("  [失败] 审计本地化失败")
-            return False
+        parsed = self._extract_json_result(result)
+        if parsed is not None:
+            print(json.dumps(parsed, ensure_ascii=False, indent=2)[:3000])
+            return parsed.get("deprecated") is True
+        print("  [失败] 审计本地化 compat 失败")
+        return False
 
     def audit_project_structure(self):
         """审计项目结构"""
@@ -636,9 +633,9 @@ class McpTestClient:
             return False
 
     def audit_resource_references(self, check_unused=True, check_broken=True, check_orphaned=True):
-        """审计资源引用"""
+        """审计资源引用（compat 转发至 doctor_resource）"""
         print(f"\n{'-'*40}")
-        print("审计资源引用")
+        print("审计资源引用 (deprecated compat)")
         print("-"*40)
 
         result = self.send_request("tools/call", {
@@ -650,19 +647,28 @@ class McpTestClient:
             }
         })
 
-        if result:
-            content = result.get("content", [])
-            for item in content:
-                text = item.get("text", "")
-                try:
-                    parsed = json.loads(text)
-                    print(json.dumps(parsed, ensure_ascii=False, indent=2)[:3000])
-                except:
-                    print(text[:3000])
-            return True
-        else:
-            print("  [失败] 审计资源引用失败")
-            return False
+        parsed = self._extract_json_result(result)
+        if parsed is not None:
+            print(json.dumps(parsed, ensure_ascii=False, indent=2)[:3000])
+            return (
+                parsed.get("deprecated") is True
+                and parsed.get("redirectTo") == "kanzi_doctor_resource"
+                and parsed.get("success") is True
+            )
+        print("  [失败] 审计资源引用 compat 失败")
+        return False
+
+    def _extract_json_result(self, result):
+        if not result:
+            return None
+        content = result.get("content", [])
+        for item in content:
+            text = item.get("text", "")
+            try:
+                return json.loads(text)
+            except Exception:
+                print(text[:3000])
+        return None
 
     def create_node(self, parent_path, node_type, node_name=None, properties=None):
         """创建节点"""
@@ -913,9 +919,14 @@ class McpTestClient:
         self.test_results["audit_bindings"] = self.audit_bindings()
         self._print_result("审计绑定", self.test_results["audit_bindings"])
 
-        # Audit localization
+        # Audit bindings modify preview
+        self.test_results["audit_bindings_modify"] = self.audit_bindings_modify_preview(
+            "kanzi_mcp/Screens/Screen", binding_index=0, code="{PreviewMcpCode}")
+        self._print_result("绑定修改 preview", self.test_results["audit_bindings_modify"])
+
+        # Audit localization (deprecated compat)
         self.test_results["audit_localization"] = self.audit_localization()
-        self._print_result("审计本地化", self.test_results["audit_localization"])
+        self._print_result("审计本地化 (deprecated)", self.test_results["audit_localization"])
 
         # Audit project structure
         self.test_results["audit_structure"] = self.audit_project_structure()
@@ -937,7 +948,7 @@ class McpTestClient:
 
         # Audit resource references
         self.test_results["audit_resource_references"] = self.audit_resource_references()
-        self._print_result("审计资源引用", self.test_results["audit_resource_references"])
+        self._print_result("审计资源引用 (deprecated compat)", self.test_results["audit_resource_references"])
 
         # Create node (preview mode - no actual creation)
         self.test_results["create_node"] = self.create_node(

@@ -19,7 +19,7 @@
 //   2. 节点查询: QueryNodes / GetNodeTree / SearchNodes
 //   3. 属性读写: GetItemProperties / TryReadPropertyValue / SetProperty
 //   4. 数据绑定: GetBindingInfo
-//   5. 审计工具: AuditBindings / AuditLocalization / AuditProjectStructure
+//   5. 审计工具: AuditBindings / AuditProjectStructure (+ compat stubs for removed audits)
 //   6. 安全序列化: SafeSerialize / MakeSafeForSerialization（处理不可序列化类型）
 // 核心反射策略:
 //   - GetActiveProject(): 5 路查找（FlattenHierarchy → 继承链 → 接口 → Project 属性 → 扫描）

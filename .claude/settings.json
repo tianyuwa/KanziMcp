@@ -15,7 +15,17 @@
       "Bash(cmd.exe /c publish.bat)",
       "Bash(cmd.exe /c build_and_upload.bat)",
       "mcp__kanzi__kanzi_upsert_custom_enum_property",
-      "mcp__kanzi__kanzi_create_state_manager"
+      "mcp__kanzi__kanzi_create_state_manager",
+      "Bash(pyinstaller --onefile --name oss_bridge_daemon --clean --noconfirm oss_bridge_daemon.py)",
+      "mcp__kanzi__kanzi_audit_bindings",
+      "Read(//e//**)",
+      "Bash(find /mnt/ -name \"TOR_Picture.png\")",
+      "Read(//mnt/**)",
+      "Read(//c/Users//**)",
+      "Read(//d//**)",
+      "Bash(cmd.exe /c \"dir E:\\\\wangtianyu\\\\localization_Test\\\\Image\\\\TOR_Picture.png\")",
+      "Bash(cmd.exe /c \"if exist \\\\\"E:\\\\wangtianyu\\\\localization_Test\\\\Image\\\\TOR_Picture.png\\\\\" \\(echo FILE EXISTS\\) else \\(echo FILE NOT FOUND\\)\")",
+      "Bash(powershell.exe -Command \"Test-Path 'E:\\\\wangtianyu\\\\localization_Test\\\\Image\\\\TOR_Picture.png'\")"
     ],
     "additionalDirectories": [
       "C:\\ProgramData\\Rightware\\Kanzi 3.9.10\\plugins"

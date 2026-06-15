@@ -1,12 +1,10 @@
 ﻿using System;
 using System.Collections;
 using System.Collections.Generic;
-using System.IO;
 using System.Linq;
 using System.Reflection;
 using System.Text.Json;
 using System.Text.RegularExpressions;
-using Rightware.Kanzi.Studio.PluginInterface;
 
 namespace KanziMcpPlugin.Services
 {
@@ -25,25 +23,45 @@ namespace KanziMcpPlugin.Services
                 if (project == null)
                     return ErrorJson("No open project");
 
-                bool checkPriority = false;
-                bool findOrphans = false;
-                if (args.HasValue)
+                var checkPriority = !args.HasValue
+                    || !args.Value.TryGetProperty("checkPriority", out var cp)
+                    || cp.GetBoolean();
+                var findOrphans = !args.HasValue
+                    || !args.Value.TryGetProperty("findOrphans", out var fo)
+                    || fo.GetBoolean();
+
+                string? auditPath = null;
+                if (args.HasValue && args.Value.TryGetProperty("path", out var pathEl)
+                    && pathEl.ValueKind == JsonValueKind.String)
                 {
-                    if (args.Value.TryGetProperty("checkPriority", out var cp))
-                        checkPriority = cp.GetBoolean();
-                    if (args.Value.TryGetProperty("findOrphans", out var fo))
-                        findOrphans = fo.GetBoolean();
+                    auditPath = pathEl.GetString();
+                }
+
+                object auditRoot = project;
+                if (!string.IsNullOrWhiteSpace(auditPath))
+                {
+                    var rootItem = GetProjectItem(auditPath);
+                    if (rootItem == null)
+                        return ErrorJson($"Node not found: {auditPath}");
+                    auditRoot = rootItem;
+                }
+
+                var modificationResults = new List<Dictionary<string, object?>>();
+                if (args.HasValue && args.Value.TryGetProperty("modifications", out var modsEl)
+                    && modsEl.ValueKind == JsonValueKind.Array)
+                {
+                    foreach (var modEl in modsEl.EnumerateArray())
+                        modificationResults.Add(ProcessBindingModification(modEl));
                 }
 
                 var issues = new List<Dictionary<string, object?>>();
                 var totalBindings = 0;
-                var bindingCodes = new Dictionary<string, List<string>>(); // code -> node paths
-                var allBoundNodes = new HashSet<string>(); // paths that have bindings
+                var bindingCodes = new Dictionary<string, List<string>>();
+                var rootPathPrefix = string.IsNullOrWhiteSpace(auditPath) ? "" : auditPath.Trim('/');
 
-                AuditBindingsRecursive(project, "", issues, ref totalBindings,
-                    bindingCodes, allBoundNodes, checkPriority, findOrphans, 0);
+                AuditBindingsRecursive(auditRoot, rootPathPrefix, issues, ref totalBindings,
+                    bindingCodes, checkPriority, findOrphans, 0);
 
-                // 优先级冲突检测
                 var priorityConflicts = new List<Dictionary<string, object?>>();
                 if (checkPriority)
                 {
@@ -62,31 +80,35 @@ namespace KanziMcpPlugin.Services
                     }
                 }
 
-                // 孤立绑定检测
                 var orphanBindings = new List<Dictionary<string, object?>>();
                 if (findOrphans)
                 {
                     foreach (var issue in issues.Where(i => i["type"]?.ToString() == "orphan"))
-                    {
                         orphanBindings.Add(issue);
-                    }
                 }
 
                 var recommendations = new List<string>();
-                if (issues.Any(i => i["type"]?.ToString() == "missing_datasource"))
-                    recommendations.Add("Check missing datasource bindings and ensure data context is configured correctly");
                 if (issues.Any(i => i["type"]?.ToString() == "orphan"))
-                    recommendations.Add("Clean up bindings without target properties");
+                    recommendations.Add("Clean up bindings whose target property could not be resolved");
                 if (priorityConflicts.Count > 0)
                     recommendations.Add($"Found {priorityConflicts.Count} priority conflicts - same binding code used by multiple nodes");
+                if (modificationResults.Any(m =>
+                    {
+                        if (m.TryGetValue("applied", out var applied))
+                            return applied is true;
+                        return false;
+                    }))
+                    recommendations.Add("Binding modifications were applied — verify data context in Kanzi Studio");
 
                 return SafeSerialize(new
                 {
                     success = true,
+                    auditRoot = string.IsNullOrWhiteSpace(auditPath) ? "(project root)" : auditPath,
                     totalBindings,
                     issues = issues.Take(200),
                     priorityConflicts,
                     orphanBindings,
+                    modificationResults = modificationResults.Count > 0 ? modificationResults : null,
                     recommendations
                 });
             }
@@ -96,9 +118,206 @@ namespace KanziMcpPlugin.Services
             }
         }
 
+        private Dictionary<string, object?> ProcessBindingModification(JsonElement modEl)
+        {
+            var nodePath = modEl.TryGetProperty("nodePath", out var np) ? np.GetString() ?? "" : "";
+            var mode = modEl.TryGetProperty("mode", out var modeEl) ? modeEl.GetString() ?? "preview" : "preview";
+            var bindingIndex = modEl.TryGetProperty("bindingIndex", out var idxEl) && idxEl.TryGetInt32(out var idx)
+                ? idx
+                : (int?)null;
+            var propertyName = modEl.TryGetProperty("property", out var propEl) ? propEl.GetString() : null;
+            var newCode = modEl.TryGetProperty("code", out var codeEl) ? codeEl.GetString() : null;
+
+            var result = new Dictionary<string, object?>
+            {
+                ["nodePath"] = nodePath,
+                ["mode"] = mode,
+                ["applied"] = false
+            };
+
+            if (string.IsNullOrWhiteSpace(nodePath))
+            {
+                result["success"] = false;
+                result["error"] = "nodePath is required";
+                return result;
+            }
+
+            if (string.IsNullOrWhiteSpace(newCode))
+            {
+                result["success"] = false;
+                result["error"] = "code is required for binding modification";
+                return result;
+            }
+
+            if (bindingIndex == null && string.IsNullOrWhiteSpace(propertyName))
+            {
+                result["success"] = false;
+                result["error"] = "bindingIndex or property is required to identify the binding";
+                return result;
+            }
+
+            var item = GetProjectItem(nodePath);
+            if (item == null)
+            {
+                result["success"] = false;
+                result["error"] = $"Node not found: {nodePath}";
+                return result;
+            }
+
+            var bindings = GetBindingsList(item);
+            if (bindings.Count == 0)
+            {
+                result["success"] = false;
+                result["error"] = "Node has no bindings";
+                return result;
+            }
+
+            object? targetBinding = null;
+            int resolvedIndex = -1;
+
+            if (bindingIndex.HasValue)
+            {
+                if (bindingIndex.Value < 0 || bindingIndex.Value >= bindings.Count)
+                {
+                    result["success"] = false;
+                    result["error"] = $"bindingIndex {bindingIndex.Value} out of range (0..{bindings.Count - 1})";
+                    return result;
+                }
+                resolvedIndex = bindingIndex.Value;
+                targetBinding = bindings[resolvedIndex];
+            }
+            else
+            {
+                for (var i = 0; i < bindings.Count; i++)
+                {
+                    var prop = ExtractBindingProperty(SafeGetProperty(bindings[i], "Property"));
+                    if (string.Equals(prop, propertyName, StringComparison.OrdinalIgnoreCase))
+                    {
+                        resolvedIndex = i;
+                        targetBinding = bindings[i];
+                        break;
+                    }
+                }
+
+                if (targetBinding == null)
+                {
+                    result["success"] = false;
+                    result["error"] = $"No binding found for property '{propertyName}'";
+                    return result;
+                }
+            }
+
+            var oldCode = SafeGetProperty(targetBinding, "Code") as string ?? "";
+            var targetProperty = ExtractBindingProperty(SafeGetProperty(targetBinding, "Property"));
+
+            result["bindingIndex"] = resolvedIndex;
+            result["property"] = targetProperty;
+            result["oldCode"] = oldCode;
+            result["newCode"] = newCode;
+
+            if (string.Equals(oldCode, newCode, StringComparison.Ordinal))
+            {
+                result["success"] = true;
+                result["message"] = "Code unchanged";
+                result["bindings"] = SerializeBindingsSnapshot(bindings);
+                return result;
+            }
+
+            if (string.Equals(mode, "preview", StringComparison.OrdinalIgnoreCase)
+                || string.Equals(mode, "dry-run", StringComparison.OrdinalIgnoreCase))
+            {
+                result["success"] = true;
+                result["message"] = "Preview only — no changes applied";
+                result["bindings"] = SerializeBindingsSnapshot(bindings);
+                return result;
+            }
+
+            if (!TrySetBindingCode(targetBinding, newCode, out var setError))
+            {
+                result["success"] = false;
+                result["error"] = setError;
+                return result;
+            }
+
+            bindings = GetBindingsList(item);
+            result["success"] = true;
+            result["applied"] = true;
+            result["message"] = "Binding code updated";
+            result["bindings"] = SerializeBindingsSnapshot(bindings);
+            return result;
+        }
+
+        private List<object> GetBindingsList(object item)
+        {
+            var list = new List<object>();
+            var bindingsProp = item.GetType().GetProperty("Bindings",
+                BindingFlags.Public | BindingFlags.Instance | BindingFlags.FlattenHierarchy);
+            if (bindingsProp == null)
+                return list;
+
+            if (bindingsProp.GetValue(item) is not IEnumerable bindings)
+                return list;
+
+            foreach (var binding in bindings)
+                list.Add(binding);
+            return list;
+        }
+
+        private List<Dictionary<string, object?>> SerializeBindingsSnapshot(IReadOnlyList<object> bindings)
+        {
+            var snapshot = new List<Dictionary<string, object?>>();
+            for (var i = 0; i < bindings.Count; i++)
+            {
+                var binding = bindings[i];
+                snapshot.Add(new Dictionary<string, object?>
+                {
+                    ["index"] = i,
+                    ["property"] = ExtractBindingProperty(SafeGetProperty(binding, "Property")),
+                    ["code"] = SafeGetProperty(binding, "Code") as string ?? "",
+                    ["mode"] = SafeGetProperty(binding, "Mode")?.ToString() ?? "OneWay"
+                });
+            }
+            return snapshot;
+        }
+
+        private bool TrySetBindingCode(object binding, string newCode, out string error)
+        {
+            error = "";
+            var bf = BindingFlags.Public | BindingFlags.Instance | BindingFlags.FlattenHierarchy;
+            var type = binding.GetType();
+
+            try
+            {
+                var codeProp = type.GetProperty("Code", bf);
+                if (codeProp != null && codeProp.CanWrite)
+                {
+                    codeProp.SetValue(binding, newCode);
+                    return true;
+                }
+
+                foreach (var methodName in new[] { "SetCode", "set_Code" })
+                {
+                    var method = type.GetMethod(methodName, bf, null, new[] { typeof(string) }, null);
+                    if (method != null)
+                    {
+                        method.Invoke(binding, new object[] { newCode });
+                        return true;
+                    }
+                }
+
+                error = "Binding object does not expose a writable Code property";
+                return false;
+            }
+            catch (Exception ex)
+            {
+                error = $"Failed to set binding code: {ex.Message}";
+                return false;
+            }
+        }
+
         private void AuditBindingsRecursive(object parent, string parentPath,
             List<Dictionary<string, object?>> issues, ref int totalBindings,
-            Dictionary<string, List<string>> bindingCodes, HashSet<string> allBoundNodes,
+            Dictionary<string, List<string>> bindingCodes,
             bool checkPriority, bool findOrphans, int depth)
         {
             if (depth > 20) return;
@@ -124,7 +343,6 @@ namespace KanziMcpPlugin.Services
                                     totalBindings++;
                                     var code = SafeGetProperty(binding, "Code") as string ?? "";
                                     var propertyName = ExtractBindingProperty(SafeGetProperty(binding, "Property"));
-                                    allBoundNodes.Add(path);
 
                                     if (string.IsNullOrWhiteSpace(code))
                                     {
@@ -137,7 +355,6 @@ namespace KanziMcpPlugin.Services
                                         });
                                     }
 
-                                    // 收集 binding code 分布（用于优先级冲突检测）
                                     if (checkPriority && !string.IsNullOrWhiteSpace(code))
                                     {
                                         if (!bindingCodes.ContainsKey(code))
@@ -145,7 +362,6 @@ namespace KanziMcpPlugin.Services
                                         bindingCodes[code].Add($"{path}:{propertyName}");
                                     }
 
-                                    // 检测无效属性名
                                     if (findOrphans && propertyName == "unknown")
                                     {
                                         issues.Add(new Dictionary<string, object?>
@@ -162,242 +378,29 @@ namespace KanziMcpPlugin.Services
                     catch { }
 
                     AuditBindingsRecursive(child, path, issues, ref totalBindings,
-                        bindingCodes, allBoundNodes, checkPriority, findOrphans, depth + 1);
+                        bindingCodes, checkPriority, findOrphans, depth + 1);
                 }
             }
             catch { }
         }
 
-        public string AuditLocalization(JsonElement? args)
+        /// <summary>Deprecated stub — localization audit removed.</summary>
+        public string AuditLocalizationDeprecated(JsonElement? args)
         {
-            if (!HasStudio)
-                return ErrorJson("Kanzi Studio not connected");
-
-            try
-            {
-                var project = GetActiveProject();
-                if (project == null)
-                    return ErrorJson("No open project");
-
-                // 解析参数
-                var languages = new List<string>();
-                var includeUntranslated = true;
-
-                if (args.HasValue)
-                {
-                    if (args.Value.TryGetProperty("languages", out var langEl))
-                    {
-                        foreach (var lang in langEl.EnumerateArray())
-                            languages.Add(lang.GetString() ?? "");
-                    }
-                    if (args.Value.TryGetProperty("includeUntranslated", out var iu))
-                        includeUntranslated = iu.GetBoolean();
-                }
-
-                // 如果未指定语言，尝试从项目中获取可用语言列表
-                var availableLanguages = new List<string>();
-                if (languages.Count == 0)
-                {
-                    availableLanguages = GetAvailableLanguages(project);
-                    languages = availableLanguages.Count > 0 ? availableLanguages : new List<string> { "en-US", "zh-CN" };
-                }
-                else
-                {
-                    availableLanguages = languages;
-                }
-
-                var textNodes = new List<Dictionary<string, object?>>();
-                var missingTranslations = new List<Dictionary<string, object?>>();
-                var inconsistentKeys = new List<Dictionary<string, object?>>();
-                int totalTextNodes = 0;
-
-                // 收集所有文本节点
-                CollectTextNodesRecursive(project, "", textNodes, 0);
-
-                // 分析每个文本节点
-                foreach (var node in textNodes)
-                {
-                    totalTextNodes++;
-                    var path = node["path"]?.ToString() ?? "";
-                    var text = node["text"]?.ToString() ?? "";
-                    var type = node["type"]?.ToString() ?? "";
-
-                    if (string.IsNullOrWhiteSpace(text))
-                    {
-                        missingTranslations.Add(new Dictionary<string, object?>
-                        {
-                            ["type"] = "empty_text",
-                            ["node"] = path,
-                            ["nodeType"] = type,
-                            ["message"] = "Text property is empty"
-                        });
-                        continue;
-                    }
-
-                    // 检测是否为本地化 key（通常以 @ 开头或包含特定格式）
-                    if (text.StartsWith("@") || text.Contains("StringTable/"))
-                    {
-                        // 这是一个本地化 key，检查各语言是否有翻译
-                        foreach (var lang in availableLanguages)
-                        {
-                            var hasTranslation = CheckLocalizationKey(project, text, lang);
-                            if (!hasTranslation)
-                            {
-                                missingTranslations.Add(new Dictionary<string, object?>
-                                {
-                                    ["type"] = "missing_translation",
-                                    ["node"] = path,
-                                    ["key"] = text,
-                                    ["language"] = lang,
-                                    ["message"] = $"Localization key '{text}' missing translation for '{lang}'"
-                                });
-                            }
-                        }
-                    }
-                }
-
-                // 统计信息
-                int nodesWithTranslation = textNodes.Count - missingTranslations.Count(i => i["type"]?.ToString() == "empty_text");
-                double coverage = totalTextNodes > 0 ? (double)nodesWithTranslation / totalTextNodes * 100 : 100;
-
-                var recommendations = new List<string>();
-                if (missingTranslations.Count > 0)
-                    recommendations.Add($"Found {missingTranslations.Count} missing translations or empty texts");
-                if (coverage < 80)
-                    recommendations.Add($"Localization coverage is {coverage:F1}% - below recommended 80%");
-                if (inconsistentKeys.Count > 0)
-                    recommendations.Add($"Found {inconsistentKeys.Count} inconsistent localization keys");
-
-                return SafeSerialize(new
-                {
-                    success = true,
-                    totalTextNodes,
-                    textNodes = textNodes.Take(100),
-                    availableLanguages,
-                    missingTranslations = missingTranslations.Take(100),
-                    inconsistentKeys,
-                    coverage = $"{coverage:F1}%",
-                    recommendations
-                });
-            }
-            catch (Exception ex)
-            {
-                return ErrorJson($"Audit localization failed: {ex.Message}");
-            }
+            _ = args;
+            return AuditCompatMapper.BuildLocalizationDeprecatedJson();
         }
 
-        private List<string> GetAvailableLanguages(object project)
+        /// <summary>Compat wrapper — forwards to DoctorResource and maps to legacy schema.</summary>
+        public string AuditResourceReferencesCompat(JsonElement? args)
         {
-            var languages = new List<string>();
-            try
-            {
-                // 尝试从 StringTableLibrary 获取语言列表
-                var libProp = project.GetType().GetProperty("StringTableLibrary",
-                    BindingFlags.Public | BindingFlags.Instance | BindingFlags.FlattenHierarchy);
-                if (libProp != null)
-                {
-                    var lib = libProp.GetValue(project) as IEnumerable;
-                    if (lib != null)
-                    {
-                        foreach (var item in lib)
-                        {
-                            var name = GetItemName(item);
-                            if (!string.IsNullOrEmpty(name) && !languages.Contains(name))
-                                languages.Add(name);
-                        }
-                    }
-                }
+            var checkUnused = !args.HasValue || !args.Value.TryGetProperty("checkUnused", out var cu) || cu.GetBoolean();
+            var checkBroken = !args.HasValue || !args.Value.TryGetProperty("checkBroken", out var cb) || cb.GetBoolean();
+            var checkOrphaned = !args.HasValue || !args.Value.TryGetProperty("checkOrphaned", out var co) || co.GetBoolean();
 
-                // 回退: 查找 StringTable 相关子节点
-                if (languages.Count == 0)
-                {
-                    var stringTables = FindChildrenByType(project, "StringTable");
-                    foreach (var st in stringTables)
-                    {
-                        var name = GetItemName(st);
-                        if (!string.IsNullOrEmpty(name) && !languages.Contains(name))
-                            languages.Add(name);
-                    }
-                }
-            }
-            catch { }
-            return languages;
-        }
-
-        private List<object> FindChildrenByType(object parent, string typeName)
-        {
-            var result = new List<object>();
-            try
-            {
-                foreach (var child in GetChildren(parent))
-                {
-                    var type = GetItemType(child);
-                    if (type.Contains(typeName))
-                        result.Add(child);
-                    result.AddRange(FindChildrenByType(child, typeName));
-                }
-            }
-            catch { }
-            return result;
-        }
-
-        private bool CheckLocalizationKey(object project, string key, string language)
-        {
-            try
-            {
-                // 简化检测：查找 StringTable 中是否有对应 key
-                var stringTables = FindChildrenByType(project, "StringTable");
-                foreach (var st in stringTables)
-                {
-                    // 跳过语言过滤（简化处理）
-                    var children = GetChildren(st);
-                    foreach (var entry in children)
-                    {
-                        var name = GetItemName(entry);
-                        if (name == key || name.Contains(key))
-                            return true;
-                    }
-                }
-            }
-            catch { }
-            // 找不到 StringTable 时保守返回 true（避免误报）
-            return true;
-        }
-
-        private void CollectTextNodesRecursive(object parent, string parentPath,
-            List<Dictionary<string, object?>> textNodes, int depth)
-        {
-            if (depth > 20) return;
-
-            try
-            {
-                foreach (var child in GetChildren(parent))
-                {
-                    var name = GetItemName(child);
-                    var path = string.IsNullOrEmpty(parentPath) ? name : $"{parentPath}/{name}";
-                    var type = GetItemType(child);
-
-                    if (type.Contains("Text"))
-                    {
-                        string? textValue = null;
-                        try
-                        {
-                            textValue = SafeGetProperty(child, "Text") as string;
-                        }
-                        catch { }
-
-                        textNodes.Add(new Dictionary<string, object?>
-                        {
-                            ["path"] = path,
-                            ["type"] = type,
-                            ["text"] = textValue
-                        });
-                    }
-
-                    CollectTextNodesRecursive(child, path, textNodes, depth + 1);
-                }
-            }
-            catch { }
+            var doctorArgs = AuditCompatMapper.BuildDoctorArgs(checkUnused, checkBroken, checkOrphaned);
+            var doctorJson = DoctorResource(doctorArgs);
+            return AuditCompatMapper.MapDoctorJsonToResourceReferencesCompat(doctorJson, checkOrphaned);
         }
 
         public string AuditProjectStructure(JsonElement? args)
@@ -411,7 +414,6 @@ namespace KanziMcpPlugin.Services
                 if (project == null)
                     return ErrorJson("没有打开的项目");
 
-                // 解析参数
                 string? namingPattern = null;
                 bool checkDepth = false;
                 bool checkNaming = false;
@@ -515,234 +517,9 @@ namespace KanziMcpPlugin.Services
             catch { }
         }
 
-        /// <summary>
-        /// 审计资源引用 - 找出未使用、破损或孤立的资源
-        /// </summary>
-        public string AuditResourceReferences(JsonElement? args)
-        {
-            if (!HasStudio)
-                return ErrorJson("Kanzi Studio 未连接");
-
-            var checkUnused = !args.HasValue || !args.Value.TryGetProperty("checkUnused", out var cu) || cu.GetBoolean();
-            var checkBroken = !args.HasValue || !args.Value.TryGetProperty("checkBroken", out var cb) || cb.GetBoolean();
-            var checkOrphaned = !args.HasValue || !args.Value.TryGetProperty("checkOrphaned", out var co) || co.GetBoolean();
-
-            try
-            {
-                var project = GetActiveProject();
-                if (project == null)
-                    return ErrorJson("没有打开的项目");
-
-                // 阶段1: 扫描整个项目，收集所有资源定义和所有资源引用
-                var allResources = new List<(string path, string name, string type, string? filePath)>();
-                var allReferences = new HashSet<string>(); // 被引用的资源名/路径
-                var brokenReferences = new List<Dictionary<string, object?>>();
-
-                ScanProjectForResources(project, "", 0, allResources, allReferences, brokenReferences, checkBroken);
-
-                // 阶段2: 对比分析
-                var unusedResources = new List<Dictionary<string, object?>>();
-                var orphanedResources = new List<Dictionary<string, object?>>();
-
-                if (checkUnused || checkOrphaned)
-                {
-                    foreach (var (path, name, type, filePath) in allResources)
-                    {
-                        // 检查该资源是否被任何节点引用
-                        bool isUsed = allReferences.Contains(name)
-                            || allReferences.Any(r => r.Contains(name))
-                            || allReferences.Any(r => path.Contains(r) || r.Contains(path));
-
-                        if (!isUsed)
-                        {
-                            unusedResources.Add(new Dictionary<string, object?>
-                            {
-                                ["type"] = type,
-                                ["path"] = path,
-                                ["name"] = name
-                            });
-                        }
-                    }
-                }
-
-                // 孤立资源 = 未使用 + 无任何引用关联
-                if (checkOrphaned)
-                {
-                    foreach (var res in unusedResources)
-                    {
-                        orphanedResources.Add(new Dictionary<string, object?>
-                        {
-                            ["type"] = res["type"],
-                            ["path"] = res["path"],
-                            ["name"] = res["name"],
-                            ["message"] = $"{res["type"]} '{res["name"]}' is not referenced by any node"
-                        });
-                    }
-                }
-
-                var allIssueCount = unusedResources.Count + brokenReferences.Count;
-
-                var recommendations = new List<string>();
-                if (allResources.Count == 0)
-                    recommendations.Add("未检测到任何资源项（资源库可能为空，或资源类型名不匹配）。请确认项目中是否存在 Texture/Material/Font 等资源。");
-                else if (allIssueCount == 0)
-                    recommendations.Add($"扫描了 {allResources.Count} 个资源，未发现未使用或损坏的资源");
-                if (unusedResources.Count > 0)
-                    recommendations.Add($"发现 {unusedResources.Count} 个未使用的资源，考虑移除以减少项目大小");
-                if (brokenReferences.Count > 0)
-                    recommendations.Add($"发现 {brokenReferences.Count} 个损坏的引用，可能导致运行时错误");
-
-                Log($"AuditResourceReferences: {allResources.Count} resources, {allReferences.Count} refs, {unusedResources.Count} unused, {brokenReferences.Count} broken");
-
-                // 收集检测到的资源类型名（去重，取前30个）
-                var detectedTypes = allResources.Select(r => r.type).Distinct().Take(30).ToList();
-
-                return SafeSerialize(new
-                {
-                    success = true,
-                    unusedResources,
-                    brokenReferences,
-                    orphanedResources,
-                    summary = new
-                    {
-                        totalResources = allResources.Count,
-                        totalUnused = unusedResources.Count,
-                        totalBroken = brokenReferences.Count,
-                        totalOrphaned = orphanedResources.Count,
-                        totalReferences = allReferences.Count,
-                        detectedResourceTypes = detectedTypes
-                    },
-                    recommendations
-                });
-            }
-            catch (Exception ex)
-            {
-                return ErrorJson($"审计资源引用失败: {ex.Message}");
-            }
-        }
-
-        /// <summary>
-        /// 递归扫描项目，收集资源定义和资源引用
-        /// </summary>
-        private void ScanProjectForResources(object parent, string parentPath, int depth,
-            List<(string path, string name, string type, string? filePath)> resources,
-            HashSet<string> references,
-            List<Dictionary<string, object?>> broken,
-            bool checkBroken)
-        {
-            if (depth > 30) return;
-
-            try
-            {
-                var parentType = parent?.GetType().Name ?? "";
-
-                foreach (var child in GetChildren(parent))
-                {
-                    var name = GetItemName(child);
-                    var type = GetItemType(child);
-                    var path = string.IsNullOrEmpty(parentPath) ? name : $"{parentPath}/{name}";
-
-                    // 识别资源类型（Kanzi 项目中的资源容器和资源项）
-                    // 注意: Image2D/TextBlock2D 等是场景节点，不是资源，不要匹配 "Image" 和 "Text"
-                    bool isResource = type.Contains("Texture") || type.Contains("Material")
-                        || type.Contains("Font") || type.Contains("Shader")
-                        || type.Contains("Brush") || type.Contains("Style")
-                        || type.Contains("Animation") || type.Contains("State")
-                        || type.Contains("Resource") || type.Contains("Asset")
-                        || type.Contains("Render") || type.Contains("Shader")
-                        || type.Contains("Mesh") || type.Contains("Prefab")
-                        || type.Contains("Composition") || type.Contains("Script")
-                        || type.Contains("Data") || type.Contains("Locale");
-
-                    // 检查是否在资源库容器内（父节点类型含 Library/Dictionary/Resource）
-                    bool inResourceContainer = parentType.Contains("Library")
-                        || parentType.Contains("Dictionary")
-                        || parentType.Contains("Resource")
-                        || parentType.Contains("Asset")
-                        || parentType.Contains("Collection")
-                        || parentType.Contains("Repository");
-
-                    // 资源项：要么自身类型是资源类型，要么在资源容器内
-                    if ((isResource || inResourceContainer) && !type.Contains("Plugin") && !type.Contains("Wrapper"))
-                    {
-                        string? filePath = null;
-
-                        // 对纹理类型，尝试提取文件路径
-                        if (checkBroken && type.Contains("Texture"))
-                        {
-                            try
-                            {
-                                filePath = SafeGetProperty(child, "FilePath") as string
-                                    ?? SafeGetProperty(child, "Source") as string
-                                    ?? SafeGetProperty(child, "Image") as string;
-                                if (!string.IsNullOrEmpty(filePath) && !File.Exists(filePath))
-                                {
-                                    // 尝试相对于项目目录
-                                    var projectDir = Path.GetDirectoryName(SafeGetProperty(GetActiveProject(), "FullPath") as string ?? "");
-                                    var fullPath = string.IsNullOrEmpty(projectDir) ? filePath : Path.Combine(projectDir, filePath);
-                                    if (!File.Exists(fullPath))
-                                    {
-                                        broken.Add(new Dictionary<string, object?>
-                                        {
-                                            ["type"] = "broken_resource",
-                                            ["resourceType"] = type,
-                                            ["path"] = path,
-                                            ["filePath"] = filePath,
-                                            ["message"] = $"Resource file not found: {filePath}"
-                                        });
-                                    }
-                                }
-                            }
-                            catch { }
-                        }
-
-                        resources.Add((path, name, type, filePath));
-                    }
-
-                    // 收集该节点的所有属性值作为引用候选
-                    try
-                    {
-                        var props = child.GetType().GetProperty("Properties",
-                            BindingFlags.Public | BindingFlags.Instance | BindingFlags.FlattenHierarchy);
-                        if (props != null)
-                        {
-                            var propValues = props.GetValue(child) as IEnumerable;
-                            if (propValues != null)
-                            {
-                                foreach (var p in propValues)
-                                {
-                                    var propName = SafeGetProperty(p, "Name") as string ?? "";
-                                    var propValue = SafeGetProperty(p, "Value");
-
-                                    if (propValue != null)
-                                    {
-                                        var valStr = propValue.ToString() ?? "";
-                                        if (!string.IsNullOrEmpty(valStr) && valStr.Length > 1)
-                                        {
-                                            references.Add(valStr);
-
-                                            // 如果属性名暗示资源引用，也加入属性值
-                                            if (propName.Contains("Texture") || propName.Contains("Material")
-                                                || propName.Contains("Font") || propName.Contains("Image")
-                                                || propName.Contains("Shader") || propName.Contains("Brush"))
-                                            {
-                                                references.Add(valStr);
-                                            }
-                                        }
-                                    }
-                                }
-                            }
-                        }
-                    }
-                    catch { }
-
-                    // 递归
-                    ScanProjectForResources(child, path, depth + 1, resources, references, broken, checkBroken);
-                }
-            }
-            catch { }
-        }
-
         #endregion
     }
 }
+
+
+

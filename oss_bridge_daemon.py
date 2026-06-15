@@ -232,7 +232,8 @@ class KanziServerBridge:
             error = response.get("error")
             if error is not None and isinstance(error, dict):
                 log(f"  Server error: {error.get('message', error)}")
-                return None
+                # Propagate the actual error so the caller can see what went wrong
+                return {"__server_error__": True, "error": error}
 
             return response.get("result")
 
@@ -262,13 +263,16 @@ class KanziServerBridge:
             "id": rpc_request.get("id", 1),
         }
 
-        if result is not None:
-            response["result"] = result
-        else:
+        if result is None:
             response["error"] = {
                 "code": -32000,
-                "message": "Forward to KanziMcpServer failed"
+                "message": "Forward to KanziMcpServer failed (no response)"
             }
+        elif isinstance(result, dict) and result.get("__server_error__"):
+            # Propagate the actual server error instead of swallowing it
+            response["error"] = result["error"]
+        else:
+            response["result"] = result
 
         return response
 

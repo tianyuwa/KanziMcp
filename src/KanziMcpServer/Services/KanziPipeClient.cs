@@ -352,14 +352,10 @@ public class KanziPipeClient : IDisposable
 
     #region 审计工具
 
-    public async Task<string> AuditBindingsAsync(string? path, bool checkPriority, bool findOrphans)
+    public async Task<string> AuditBindingsAsync(JsonElement args)
     {
-        return await SendRequestAsync<string>("audit_bindings", new { path, checkPriority, findOrphans });
-    }
-
-    public async Task<string> AuditLocalizationAsync(List<string> languages)
-    {
-        return await SendRequestAsync<string>("audit_localization", new { languages });
+        var payload = JsonSerializer.Deserialize<object>(args.GetRawText());
+        return await SendRequestAsync<string>("audit_bindings", payload);
     }
 
     public async Task<string> AuditProjectStructureAsync(string? namingPattern, bool checkDepth, bool checkNaming)
@@ -368,7 +364,7 @@ public class KanziPipeClient : IDisposable
     }
 
     /// <summary>
-    /// Audit resource references - find unused, broken, or orphaned resources
+    /// Legacy compat — forwards to plugin AuditResourceReferencesCompat.
     /// </summary>
     public async Task<string> AuditResourceReferencesAsync(bool checkUnused = true, bool checkBroken = true, bool checkOrphaned = true)
     {
@@ -400,11 +396,19 @@ public class KanziPipeClient : IDisposable
     #region 资源导入
 
     /// <summary>
-    /// Import an image into the resource library
+    /// Import one or many images into the resource library
     /// </summary>
-    public async Task<string> ImportImageAsync(string filePath, string? resourceName = null, string targetFolder = "Textures")
+    public async Task<string> ImportImageAsync(JsonElement args)
     {
-        return await SendRequestAsync<string>("import_image", new { filePath, resourceName, targetFolder });
+        return await SendRequestAsync<string>("import_image", args);
+    }
+
+    /// <summary>
+    /// Import a single image (convenience overload)
+    /// </summary>
+    public Task<string> ImportImageAsync(string filePath, string? resourceName = null, string targetFolder = "Textures")
+    {
+        return ImportImageAsync(JsonSerializer.SerializeToElement(new { filePath, resourceName, targetFolder }));
     }
 
     /// <summary>
@@ -422,9 +426,15 @@ public class KanziPipeClient : IDisposable
     /// <summary>
     /// Diagnose resource usage - find unused Image and Texture resources
     /// </summary>
-    public async Task<string> DoctorResourceAsync(bool checkImages = true, bool checkTextures = true)
+    public async Task<string> DoctorResourceAsync(
+        bool checkImages = true,
+        bool checkTextures = true,
+        bool checkBroken = false,
+        List<string>? resourceFolders = null)
     {
-        return await SendRequestAsync<string>("doctor_resource", new { checkImages, checkTextures });
+        resourceFolders ??= new List<string> { "Textures" };
+        return await SendRequestAsync<string>("doctor_resource",
+            new { checkImages, checkTextures, checkBroken, resourceFolders });
     }
 
     #endregion

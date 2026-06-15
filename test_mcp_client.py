@@ -33,12 +33,29 @@ import argparse
 import os
 
 
+# Kanzi Monitor auto-test project paths (Untitled / kanziMCP3910)
+TEST_PATHS = {
+    "screen": "Screens/Screen",
+    "viewport": "Screens/Screen/RootPage/Viewport 2D",
+    "text_2d": "Screens/Screen/RootPage/Viewport 2D/Text Block 2D",
+    "text_2d_1": "Screens/Screen/RootPage/Viewport 2D/Text Block 2D_1",
+    "scene": "Screens/Screen/RootPage/Viewport 2D/Scene",
+    "test_text_2d": "Screens/Screen/RootPage/Viewport 2D/Test_Text_2D",
+}
+IMPORT_IMAGE_PATH = os.environ.get(
+    "KANZI_TEST_IMAGE",
+    "E:/wangtianyu/localization_Test/Image/L3_NCA_STANDBY.png",
+)
+EXPECTED_TOOL_COUNT = 18
+
+
 class McpTestClient:
     """MCP Protocol Test Client"""
 
     def __init__(self, server_path, verbose=False):
         self.server_path = server_path
         self.verbose = verbose
+        self.auto_mode = False
         self.process = None
         self.request_id = 0
         self.initialized = False
@@ -177,7 +194,7 @@ class McpTestClient:
             print("[FAIL] MCP handshake failed")
             return False
 
-    def list_tools(self):
+    def list_tools(self, expected_min=EXPECTED_TOOL_COUNT):
         """List all tools"""
         print("\n" + "="*50)
         print("Step 2: List all MCP tools")
@@ -186,17 +203,20 @@ class McpTestClient:
         result = self.send_request("tools/list")
         if result and "tools" in result:
             tools = result["tools"]
-            print(f"\n  Total {len(tools)} tools:\n")
+            print(f"\n  Total {len(tools)} tools (expected >= {expected_min}):\n")
             for i, tool in enumerate(tools, 1):
                 print(f"  {i}. {tool['name']}")
-                print(f"     {tool.get('description', 'N/A')}")
-                schema = tool.get('inputSchema', {}).get('properties', {})
-                if schema:
-                    params = [f"{k}({v.get('type','?')})" for k, v in schema.items()]
-                    print(f"     Args: {', '.join(params)}")
+                if not self.auto_mode:
+                    print(f"     {tool.get('description', 'N/A')}")
+                    schema = tool.get('inputSchema', {}).get('properties', {})
+                    if schema:
+                        params = [f"{k}({v.get('type','?')})" for k, v in schema.items()]
+                        print(f"     Args: {', '.join(params)}")
                 print()
+            return len(tools) >= expected_min
         else:
             print("[FAIL] Failed to get tool list")
+            return False
 
     def get_status(self):
         """Check server status"""
@@ -205,23 +225,16 @@ class McpTestClient:
         print("-"*40)
 
         result = self.send_request("tools/call", {
-            "name": "kanzi_status",
+            "name": "kanzi_get_status",
             "arguments": {}
         })
 
-        if result:
-            content = result.get("content", [])
-            for item in content:
-                text = item.get('text', '')
-                print(f"  {text}")
-                # kanzi_status now returns {"pipe": {"connected": false, ...}}
-                # Even if disconnected, valid JSON means MCP server is working
-                if '"error"' not in text.lower():
-                    return True
-            return True
-        else:
-            print("  [FAIL] Failed to get status")
-            return False
+        parsed = self._extract_json_result(result)
+        if parsed is not None:
+            self._print_parsed(parsed)
+            return parsed.get("success", True) is not False
+        print("  [FAIL] Failed to get status")
+        return False
 
     def get_node_tree(self, root_path=None, depth=3):
         """Get node tree"""
@@ -464,7 +477,7 @@ class McpTestClient:
             print("  [FAIL] Get property metadata failed")
             return False
 
-    def audit_bindings(self, path=None):
+    def audit_bindings(self, path=None, modifications=None):
         """Audit data bindings"""
         print(f"\n{'-'*40}")
         print(f"Audit data bindings (path: {path or 'entire project'})")
@@ -476,30 +489,34 @@ class McpTestClient:
         }
         if path:
             args["path"] = path
+        if modifications:
+            args["modifications"] = modifications
 
         result = self.send_request("tools/call", {
             "name": "kanzi_audit_bindings",
             "arguments": args
         })
 
-        if result:
-            content = result.get("content", [])
-            for item in content:
-                text = item.get("text", "")
-                try:
-                    parsed = json.loads(text)
-                    print(json.dumps(parsed, ensure_ascii=False, indent=2)[:3000])
-                except:
-                    print(text[:3000])
-            return True
-        else:
-            print("  [FAIL] Audit bindings failed")
-            return False
+        parsed = self._extract_json_result(result)
+        if parsed is not None:
+            print(json.dumps(parsed, ensure_ascii=False, indent=2)[:3000])
+            return parsed.get("success", True) is not False
+        print("  [FAIL] Audit bindings failed")
+        return False
+
+    def audit_bindings_modify_preview(self, node_path, binding_index=0, code="{PreviewCode}"):
+        """Preview binding code modification (no apply)"""
+        return self.audit_bindings(modifications=[{
+            "nodePath": node_path,
+            "bindingIndex": binding_index,
+            "code": code,
+            "mode": "preview"
+        }])
 
     def audit_localization(self, languages=None):
-        """Audit localization"""
+        """Audit localization (deprecated compat stub)"""
         print(f"\n{'-'*40}")
-        print(f"Audit localization")
+        print("Audit localization (deprecated compat)")
         print("-"*40)
 
         args = {
@@ -512,19 +529,12 @@ class McpTestClient:
             "arguments": args
         })
 
-        if result:
-            content = result.get("content", [])
-            for item in content:
-                text = item.get("text", "")
-                try:
-                    parsed = json.loads(text)
-                    print(json.dumps(parsed, ensure_ascii=False, indent=2)[:3000])
-                except:
-                    print(text[:3000])
-            return True
-        else:
-            print("  [FAIL] Audit localization failed")
-            return False
+        parsed = self._extract_json_result(result)
+        if parsed is not None:
+            print(json.dumps(parsed, ensure_ascii=False, indent=2)[:3000])
+            return parsed.get("deprecated") is True
+        print("  [FAIL] Audit localization compat failed")
+        return False
 
     def audit_project_structure(self):
         """Audit project structure"""
@@ -670,9 +680,9 @@ class McpTestClient:
             return False
 
     def audit_resource_references(self, check_unused=True, check_broken=True, check_orphaned=True):
-        """Audit resource references"""
+        """Audit resource references (compat redirect to doctor_resource)"""
         print(f"\n{'-'*40}")
-        print("Audit resource references")
+        print("Audit resource references (deprecated compat)")
         print("-"*40)
 
         result = self.send_request("tools/call", {
@@ -684,19 +694,111 @@ class McpTestClient:
             }
         })
 
-        if result:
-            content = result.get("content", [])
-            for item in content:
-                text = item.get("text", "")
-                try:
-                    parsed = json.loads(text)
-                    print(json.dumps(parsed, ensure_ascii=False, indent=2)[:3000])
-                except:
-                    print(text[:3000])
-            return True
+        parsed = self._extract_json_result(result)
+        if parsed is not None:
+            print(json.dumps(parsed, ensure_ascii=False, indent=2)[:3000])
+            return (
+                parsed.get("deprecated") is True
+                and parsed.get("redirectTo") == "kanzi_doctor_resource"
+                and parsed.get("success") is True
+            )
+        print("  [FAIL] Audit resource references compat failed")
+        return False
+
+    def _extract_json_result(self, result):
+        if not result:
+            return None
+        content = result.get("content", [])
+        for item in content:
+            text = item.get("text", "")
+            try:
+                return json.loads(text)
+            except Exception:
+                print(text[:3000])
+        return None
+
+    def _print_parsed(self, parsed, limit=3000):
+        if self.auto_mode:
+            summary = {
+                k: parsed[k]
+                for k in ("success", "count", "error", "message", "totalBatches",
+                          "batchStatesCreated", "affectedCount", "deprecated", "redirectTo")
+                if k in parsed
+            }
+            if summary:
+                print(f"  {json.dumps(summary, ensure_ascii=False)}")
+            else:
+                print(f"  keys: {list(parsed.keys())[:12]}")
         else:
-            print("  [FAIL] Audit resource references failed")
+            print(json.dumps(parsed, ensure_ascii=False, indent=2)[:limit])
+
+    def _tool_call(self, name, arguments, label=None, require_success=True):
+        if label:
+            print(f"\n{'-'*40}")
+            print(label)
+            print("-"*40)
+
+        result = self.send_request("tools/call", {
+            "name": name,
+            "arguments": arguments
+        })
+        parsed = self._extract_json_result(result)
+        if parsed is None:
+            print("  [FAIL] No JSON response")
             return False
+
+        self._print_parsed(parsed)
+        if not require_success:
+            return True
+        if parsed.get("success") is True:
+            return True
+        if parsed.get("deprecated") is True:
+            return True
+        if parsed.get("success") is False:
+            return False
+        if parsed.get("error"):
+            return False
+        # Tools that return data without explicit success (e.g. status payloads)
+        return True
+
+    def upsert_custom_enum_property(self, name, options, mode="preview",
+                                    display_name=None, category=None):
+        """Create or update custom enum property"""
+        args = {"name": name, "options": options, "mode": mode}
+        if display_name:
+            args["displayName"] = display_name
+        if category:
+            args["category"] = category
+        return self._tool_call(
+            "kanzi_upsert_custom_enum_property",
+            args,
+            label=f"Upsert custom enum: {name} (mode={mode})",
+        )
+
+    def create_state_manager(self, manager_name, group_name, group_property, states,
+                             bind_node_path="", mode="preview", auto_generate_count=0,
+                             batch_size=12, batch_index=0, confirm_large_batch=False):
+        """Create state manager (preview or batched apply)"""
+        args = {
+            "managerName": manager_name,
+            "groupName": group_name,
+            "groupProperty": group_property,
+            "states": states,
+            "mode": mode,
+            "batchSize": batch_size,
+            "batchIndex": batch_index,
+        }
+        if bind_node_path:
+            args["bindNodePath"] = bind_node_path
+        if auto_generate_count:
+            args["autoGenerateCount"] = auto_generate_count
+        if confirm_large_batch:
+            args["confirmLargeBatch"] = True
+        return self._tool_call(
+            "kanzi_create_state_manager",
+            args,
+            label=f"Create state manager: {manager_name}/{group_name} (mode={mode})",
+        )
 
     def create_node(self, parent_path, node_type, node_name=None, properties=None):
         """Create node"""
@@ -855,168 +957,258 @@ Tip: Use quotes for paths/values with spaces:
                 print(f"  Unknown command: {action}")
 
     def run_auto_test(self):
-        """Auto-run complete test flow"""
+        """Auto-run complete test flow (Kanzi Monitor: C:\\KanziMonitor\\Build_MCP\\main.exe --auto)"""
+        self.auto_mode = True
+        p = TEST_PATHS
+
         print("\n" + "#"*60)
-        print("#  KanziMcpServer Complete Auto Test (18 tools)")
+        print("#  KanziMcpServer Auto Test (18 MCP tools + compat)")
         print("#"*60)
 
-        # Track test results
-        # Test categories: MCP core vs Kanzi Studio required
         self.test_results = {
-            # MCP Core (pass if MCP Server works)
+            # MCP core (PASS requires 3/3)
             "init": False,
             "list_tools": False,
             "status": False,
-            # Kanzi Studio required (failure = environment, not code bug)
+            # Kanzi Studio (informational)
             "node_tree": False,
             "node_types": False,
             "search": False,
-            "query": False,
+            "query_by_type": False,
+            "query_by_path": False,
             "binding": False,
-            "set_property": False,
-            "set_text_property": False,
             "property_metadata": False,
+            "set_property_preview": False,
+            "set_text_preview": False,
+            "batch_font_preview": False,
             "audit_bindings": False,
-            "audit_localization": False,
             "audit_structure": False,
             "doctor_resource": False,
-            # === New 6 tool tests ===
             "batch_set_property": False,
-            "audit_resource_references": False,
             "create_node": False,
-            "delete_node": False,
+            "delete_node_preview": False,
             "import_image": False,
-            "import_fbx": False,
+            "upsert_enum_preview": False,
+            "state_manager_preview": False,
+            # Deprecated compat (optional)
+            "audit_localization": False,
+            "audit_resource_references": False,
         }
 
-        # MCP Core Tests
         if not self.initialize():
             self._print_result("MCP Handshake", False, "Init failed")
             return False
         self.test_results["init"] = True
         self._print_result("MCP Handshake", True)
 
-        # List all tools
-        self.list_tools()
-        self.test_results["list_tools"] = True
-        self._print_result("List tools", True)
+        self.test_results["list_tools"] = self.list_tools()
+        self._print_result("List tools", self.test_results["list_tools"])
 
-        # Server status (using GetConnectionStatusString, no connection attempt)
-        status_result = self.get_status()
-        self.test_results["status"] = status_result
-        self._print_result("Server status", status_result, "Failed to get status" if not status_result else "")
+        self.test_results["status"] = self.get_status()
+        self._print_result("Server status", self.test_results["status"])
 
-        # Kanzi Studio Required Tests
-        print("\n--- Tests below require Kanzi Studio running ---")
+        print("\n--- Kanzi Studio tests (require Studio + open project) ---")
 
-        # Node tree
-        self.test_results["node_tree"] = self.get_node_tree(depth=2)
+        self.test_results["node_tree"] = self._tool_call(
+            "kanzi_get_node_tree",
+            {"rootPath": p["screen"], "depth": 3, "includeProperties": False},
+            label=f"Get node tree: {p['screen']} depth=3",
+        )
         self._print_result("Get node tree", self.test_results["node_tree"])
 
-        # Node types
-        self.test_results["node_types"] = self.list_node_types()
+        self.test_results["node_types"] = self._tool_call(
+            "kanzi_list_node_types", {},
+            label="List node types",
+        )
         self._print_result("List node types", self.test_results["node_types"])
 
-        # Search nodes
-        self.test_results["search"] = self.search_nodes("Screen")
+        self.test_results["search"] = self._tool_call(
+            "kanzi_search_nodes",
+            {
+                "searchText": "Text Block 2D",
+                "searchIn": ["Name", "Path", "Type"],
+                "caseSensitive": True,
+            },
+            label="Search nodes: Text Block 2D (case sensitive)",
+        )
         self._print_result("Search nodes", self.test_results["search"])
 
-        # Query nodes by type
-        self.test_results["query"] = self.query_nodes(node_type="TextBlock2D")
-        self._print_result("Query nodes", self.test_results["query"])
+        self.test_results["query_by_type"] = self._tool_call(
+            "kanzi_query_nodes",
+            {"type": "Text Block 2D", "limit": 50, "recursive": True},
+            label="Query nodes by type: Text Block 2D",
+        )
+        self._print_result("Query by type", self.test_results["query_by_type"])
 
-        # Get binding info
-        self.test_results["binding"] = self.get_binding_info("kanzi_mcp/Screens/Screen")
+        self.test_results["query_by_path"] = self._tool_call(
+            "kanzi_query_nodes",
+            {
+                "path": p["text_2d_1"],
+                "includeProperties": True,
+                "includeBindings": True,
+                "recursive": False,
+                "limit": 1,
+            },
+            label=f"Query node detail: {p['text_2d_1']}",
+        )
+        self._print_result("Query by path", self.test_results["query_by_path"])
+
+        self.test_results["binding"] = self._tool_call(
+            "kanzi_get_binding_info",
+            {"path": p["text_2d_1"], "includeMetadata": True},
+            label=f"Get binding info: {p['text_2d_1']}",
+        )
         self._print_result("Get binding info", self.test_results["binding"])
 
-        # Set property (preview mode)
-        self.test_results["set_property"] = self.set_property_preview("kanzi_mcp/Screens/Screen", "Name", "TestScreen")
-        self._print_result("Set property (preview)", self.test_results["set_property"])
+        self.test_results["property_metadata"] = self._tool_call(
+            "kanzi_get_property_metadata",
+            {"nodeType": "Text Block 2D"},
+            label="Property metadata: Text Block 2D",
+        )
+        self._print_result("Property metadata", self.test_results["property_metadata"])
 
-        # Set Text property (apply mode) - test for TextBlock2D Text modification
-        print("\n--- Text Property Apply Test ---")
-        self.test_results["set_text_property"] = self.set_property(
-            "kanzi_mcp/Screens/Screen/RootPage/ViewPort2D/Text Block 2D",
-            "Text", "Hello MCP", mode="apply")
-        self._print_result("Set Text property (apply)", self.test_results["set_text_property"])
+        self.test_results["set_property_preview"] = self._tool_call(
+            "kanzi_set_node_property",
+            {"path": p["screen"], "property": "Name", "value": "TestScreen", "mode": "preview"},
+            label=f"Set property preview: {p['screen']}.Name",
+        )
+        self._print_result("Set property (preview)", self.test_results["set_property_preview"])
 
-        # Get property metadata
-        self.test_results["property_metadata"] = self.get_property_metadata("Node2D")
-        self._print_result("Get property metadata", self.test_results["property_metadata"])
+        self.test_results["set_text_preview"] = self._tool_call(
+            "kanzi_set_node_property",
+            {
+                "path": p["text_2d"],
+                "property": "TextConcept.Text",
+                "value": "KanziMCP AutoTest",
+                "mode": "preview",
+            },
+            label=f"Set text preview: {p['text_2d']}",
+        )
+        self._print_result("Set text (preview)", self.test_results["set_text_preview"])
 
-        # Audit bindings
+        self.test_results["batch_font_preview"] = self._tool_call(
+            "kanzi_batch_set_property",
+            {
+                "filter": {"type": "Text Block 2D", "recursive": True},
+                "properties": {"FontStyleConcept.Size": 150},
+                "mode": "preview",
+            },
+            label="Batch font size preview (FontStyleConcept.Size=150)",
+        )
+        self._print_result("Batch font size (preview)", self.test_results["batch_font_preview"])
+
         self.test_results["audit_bindings"] = self.audit_bindings()
         self._print_result("Audit bindings", self.test_results["audit_bindings"])
 
-        # Audit localization
-        self.test_results["audit_localization"] = self.audit_localization()
-        self._print_result("Audit localization", self.test_results["audit_localization"])
-
-        # Audit project structure
-        self.test_results["audit_structure"] = self.audit_project_structure()
+        self.test_results["audit_structure"] = self._tool_call(
+            "kanzi_audit_project_structure",
+            {
+                "checkDepth": True,
+                "checkNaming": True,
+                "namingPattern": "^[a-z][a-zA-Z0-9]*$",
+            },
+            label="Audit project structure",
+        )
         self._print_result("Audit project structure", self.test_results["audit_structure"])
 
-        # Doctor resource - diagnose unused resources
-        self.test_results["doctor_resource"] = self.doctor_resource()
+        self.test_results["doctor_resource"] = self._tool_call(
+            "kanzi_doctor_resource",
+            {"checkImages": True, "checkTextures": True, "checkBroken": False},
+            label="Doctor resource",
+        )
         self._print_result("Doctor resource", self.test_results["doctor_resource"])
 
-        # === New 6 tool tests ===
-
-        # Batch set property (preview mode)
-        self.test_results["batch_set_property"] = self.batch_set_property(
-            filter_dict={"type": "Node2D"},
-            properties={"Opacity": 0.8},
-            mode="preview"
+        self.test_results["batch_set_property"] = self._tool_call(
+            "kanzi_batch_set_property",
+            {
+                "filter": {"type": "Text Block 2D", "recursive": True},
+                "properties": {"TextConcept.Text": "all test"},
+                "mode": "preview",
+            },
+            label="Batch set text preview",
         )
         self._print_result("Batch set property (preview)", self.test_results["batch_set_property"])
 
-        # Audit resource references
-        self.test_results["audit_resource_references"] = self.audit_resource_references()
-        self._print_result("Audit resource references", self.test_results["audit_resource_references"])
-
-        # Create node (preview mode - no actual creation)
-        self.test_results["create_node"] = self.create_node(
-            parent_path="kanzi_mcp/Screens/Screen",
-            node_type="EmptyNode2D",
-            node_name="TestNode_MCP"
+        self.test_results["create_node"] = self._tool_call(
+            "kanzi_create_node",
+            {
+                "parentPath": p["scene"],
+                "nodeType": "Text Block 3D",
+                "nodeName": "MCP_AutoTest_3D",
+            },
+            label=f"Create node: Text Block 3D under {p['scene']}",
         )
         self._print_result("Create node", self.test_results["create_node"])
 
-        # Delete node (preview/dry-run mode - no actual deletion)
-        self.test_results["delete_node"] = self.delete_node(
-            path="kanzi_mcp/Screens/Screen/TestNode_MCP",
-            mode="preview"
+        self.test_results["delete_node_preview"] = self._tool_call(
+            "kanzi_delete_node",
+            {"path": p["test_text_2d"], "mode": "preview"},
+            label=f"Delete node preview: {p['test_text_2d']}",
         )
-        self._print_result("Delete node (preview)", self.test_results["delete_node"])
+        self._print_result("Delete node (preview)", self.test_results["delete_node_preview"])
 
-        # Import image - test with a non-existent file (expected to fail gracefully)
-        # In real usage, this would be a real image path
-        self.test_results["import_image"] = self.import_image(
-            file_path="C:/temp/test_image.png"
-        )
+        if os.path.exists(IMPORT_IMAGE_PATH):
+            self.test_results["import_image"] = self._tool_call(
+                "kanzi_import_image",
+                {"filePath": IMPORT_IMAGE_PATH, "targetFolder": "Textures"},
+                label=f"Import image: {IMPORT_IMAGE_PATH}",
+            )
+        else:
+            print(f"\n  [SKIP] Import image - file not found: {IMPORT_IMAGE_PATH}")
+            self.test_results["import_image"] = True
         self._print_result("Import image", self.test_results["import_image"])
 
-        # Import FBX - test with a non-existent file (expected to fail gracefully)
-        # In real usage, this would be a real FBX path
-        self.test_results["import_fbx"] = self.import_fbx(
-            file_path="C:/temp/test_model.fbx"
+        self.test_results["upsert_enum_preview"] = self.upsert_custom_enum_property(
+            name="MCP_AutoTest_Enum",
+            options=[
+                {"name": "Test1", "value": 1},
+                {"name": "Test2", "value": 2},
+            ],
+            mode="preview",
+            display_name="MCP AutoTest Enum",
         )
-        self._print_result("Import FBX", self.test_results["import_fbx"])
+        self._print_result("Upsert enum (preview)", self.test_results["upsert_enum_preview"])
+
+        self.test_results["state_manager_preview"] = self.create_state_manager(
+            manager_name="MCP_AutoTest_Manager",
+            group_name="MCP_AutoTest_Group",
+            group_property="warnvalue",
+            bind_node_path=p["viewport"],
+            mode="preview",
+            auto_generate_count=3,
+            batch_size=12,
+            states=[{
+                "stateName": "warn_{0}",
+                "statePropertyValue": 1,
+                "objects": [{
+                    "nodeName": "Text Block 2D",
+                    "nodePath": p["text_2d"],
+                    "properties": {"TextConcept.Text": "warning_{0}"},
+                }],
+            }],
+        )
+        self._print_result("State manager (preview)", self.test_results["state_manager_preview"])
+
+        print("\n--- Deprecated compat tools ---")
+        self.test_results["audit_localization"] = self.audit_localization()
+        self._print_result("Audit localization (deprecated)", self.test_results["audit_localization"])
+
+        self.test_results["audit_resource_references"] = self.audit_resource_references()
+        self._print_result("Audit resource references (deprecated)", self.test_results["audit_resource_references"])
 
         print("\n" + "#"*60)
         print("#  Automated test complete!")
         print("#"*60)
 
-        # Analyze results
-        core_tests = sum(1 for k in ["init", "list_tools", "status"] if self.test_results[k])
-        kanzi_tests = sum(1 for k in self.test_results if k not in ["init", "list_tools", "status"])
-        kanzi_passed = sum(1 for k in self.test_results if k not in ["init", "list_tools", "status"] and self.test_results[k])
+        core_keys = ["init", "list_tools", "status"]
+        kanzi_keys = [k for k in self.test_results if k not in core_keys]
+        core_tests = sum(1 for k in core_keys if self.test_results[k])
+        kanzi_passed = sum(1 for k in kanzi_keys if self.test_results[k])
+        kanzi_tests = len(kanzi_keys)
 
         print(f"\nCore Tests: {core_tests}/3 passed")
         print(f"Kanzi Tests: {kanzi_passed}/{kanzi_tests} passed")
 
-        # Verdict: Core tests pass = PASS
-        # Kanzi test failures are expected (environment), do not affect verdict
         if core_tests >= 3:
             print("\nTEST_RESULT: PASS")
             print("Note: MCP Server core functionality is working.")

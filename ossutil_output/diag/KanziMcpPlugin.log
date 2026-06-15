@@ -1,0 +1,3 @@
+[2026-06-13 15:54:51] [TcpServer] Log truncated
+[15:54:51.148] [TcpServer] HandleClient error: [AggregateException] 发生一个或多个错误。
+[15:54:51.148] [TcpServer] Client disconnected, connection closed

@@ -2,11 +2,11 @@
 
 
 a = Analysis(
-    ['C:/Users/WTY/WorkBuddy/kanziMcpServer/oss_bridge_daemon.py'],
+    ['oss_bridge_daemon.py'],
     pathex=[],
     binaries=[],
     datas=[],
-    hiddenimports=['oss2', 'aliyunsdkcore', 'cryptography'],
+    hiddenimports=[],
     hookspath=[],
     hooksconfig={},
     runtime_hooks=[],

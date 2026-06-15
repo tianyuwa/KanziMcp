@@ -153,27 +153,19 @@ TOOLS = [
     # ========== 审计工具 ==========
     {
         "name": "kanzi_audit_bindings",
-        "description": "Audit all data bindings in the project. Find missing data sources, orphan bindings, and priority conflicts.",
+        "description": "Audit and optionally modify data bindings. Detects empty codes, duplicate codes, unresolved properties. Supports preview/apply code updates via modifications.",
         "inputSchema": {
             "type": "object",
             "properties": {
                 "path": {"type": "string", "description": "Scope path (empty for full project)"},
-                "checkPriority": {"type": "boolean", "description": "Check for priority conflicts", "default": True},
-                "findOrphans": {"type": "boolean", "description": "Find orphan bindings", "default": True}
+                "checkPriority": {"type": "boolean", "description": "Check duplicate binding codes", "default": True},
+                "findOrphans": {"type": "boolean", "description": "Find unresolved binding target properties", "default": True},
+                "modifications": {"type": "array", "description": "Optional: [{ nodePath, bindingIndex|property, code, mode: preview|apply }]"}
             }
         }
     },
-    {
-        "name": "kanzi_audit_localization",
-        "description": "Audit localization coverage. Find missing translations and inconsistent text keys.",
-        "inputSchema": {
-            "type": "object",
-            "properties": {
-                "languages": {"type": "array", "items": {"type": "string"}, "description": "Target languages to check"},
-                "includeUntranslated": {"type": "boolean", "description": "Include untranslated text nodes", "default": True}
-            }
-        }
-    },
+    # kanzi_audit_localization — REMOVED from public list (compat stub still accepts calls)
+    # kanzi_audit_resource_references — REMOVED from public list (compat stub forwards to kanzi_doctor_resource)
     {
         "name": "kanzi_audit_project_structure",
         "description": "Audit project structure for naming conventions and organization best practices.",
@@ -183,18 +175,6 @@ TOOLS = [
                 "namingPattern": {"type": "string", "description": "Regex pattern for naming convention (e.g. '^[A-Z][a-zA-Z0-9 _]*$')"},
                 "checkDepth": {"type": "boolean", "description": "Check for excessively deep nesting", "default": True},
                 "checkNaming": {"type": "boolean", "description": "Check naming conventions", "default": True}
-            }
-        }
-    },
-    {
-        "name": "kanzi_audit_resource_references",
-        "description": "Audit resource references — find unused, broken, or orphaned resources (images, textures, materials).",
-        "inputSchema": {
-            "type": "object",
-            "properties": {
-                "checkUnused": {"type": "boolean", "description": "Find unused resources", "default": True},
-                "checkBroken": {"type": "boolean", "description": "Find broken/missing resource references", "default": True},
-                "checkOrphaned": {"type": "boolean", "description": "Find orphaned resource files", "default": True}
             }
         }
     },
@@ -258,12 +238,14 @@ TOOLS = [
     # ========== 资源诊断 ==========
     {
         "name": "kanzi_doctor_resource",
-        "description": "Diagnose resource usage in the project. Find unused Image and Texture resources that can be safely removed to reduce project size.",
+        "description": "Diagnose project resources — unused Image/Texture and optional missing texture file detection.",
         "inputSchema": {
             "type": "object",
             "properties": {
                 "checkImages": {"type": "boolean", "description": "Check for unused images", "default": True},
-                "checkTextures": {"type": "boolean", "description": "Check for unused textures", "default": True}
+                "checkTextures": {"type": "boolean", "description": "Check for unused textures", "default": True},
+                "checkBroken": {"type": "boolean", "description": "Check texture source files exist on disk", "default": False},
+                "resourceFolders": {"type": "array", "items": {"type": "string"}, "description": "Folders to scan (default: [\"Textures\"])"}
             }
         }
     },
