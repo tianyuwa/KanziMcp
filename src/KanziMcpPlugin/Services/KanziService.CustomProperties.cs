@@ -80,8 +80,10 @@ namespace KanziMcpPlugin.Services
                 if (project == null)
                     return ErrorJson("No active project");
 
-                // Get PropertyTypeLibrary
-                var propertyLibObj = SafeGetProperty(project, "PropertyTypeLibrary");
+                // SDK 优先：Project.PropertyTypeLibrary（ApiDump L1243, L772）
+                var sdkProj = GetSdkProject();
+                var propertyLibObj = (object?)sdkProj?.PropertyTypeLibrary
+                    ?? SafeGetProperty(project, "PropertyTypeLibrary");
                 if (propertyLibObj == null)
                     return ErrorJson("Cannot access PropertyTypeLibrary");
 
@@ -135,31 +137,59 @@ namespace KanziMcpPlugin.Services
                 if (!isCreate && !isCustomEnum)
                 {
                     Log($"UpsertCustomEnumProperty: existing property is not CustomEnumProperty, deleting...");
-                    try
+                    // SDK 优先：PropertyTypeLibrary.RemoveDynamicProperty（ApiDump L1028, L1331）
+                    var deleted = false;
+                    if (sdkProj?.PropertyTypeLibrary != null)
                     {
-                        var deleteMethod = propertyLibObj.GetType().GetMethod("DeleteProperty",
-                            BindingFlags.Public | BindingFlags.Instance | BindingFlags.FlattenHierarchy);
-                        if (deleteMethod != null)
+                        try
                         {
-                            deleteMethod.Invoke(propertyLibObj, new[] { existingProperty! });
-                            Log($"UpsertCustomEnumProperty: deleted non-enum property '{name}'");
-                            isCreate = true;
-                            action = "create";
+                            var removeMethod = sdkProj.PropertyTypeLibrary.GetType()
+                                .GetMethod("RemoveDynamicProperty",
+                                    BindingFlags.Public | BindingFlags.Instance | BindingFlags.FlattenHierarchy);
+                            if (removeMethod != null)
+                            {
+                                removeMethod.Invoke(sdkProj.PropertyTypeLibrary, new object[] { name });
+                                deleted = true;
+                                Log($"UpsertCustomEnumProperty: removed non-enum property '{name}' via SDK");
+                            }
                         }
-                        else
+                        catch (Exception ex)
                         {
-                            return ErrorJson($"Property '{name}' exists but is not a CustomEnumProperty and cannot be deleted automatically");
+                            Log($"UpsertCustomEnumProperty: SDK RemoveDynamicProperty failed: {ex.Message}");
                         }
                     }
-                    catch (Exception ex)
+
+                    if (!deleted)
                     {
-                        return ErrorJson($"Failed to delete non-enum property '{name}': {ex.Message}");
+                        try
+                        {
+                            var deleteMethod = propertyLibObj.GetType().GetMethod("DeleteProperty",
+                                BindingFlags.Public | BindingFlags.Instance | BindingFlags.FlattenHierarchy);
+                            if (deleteMethod != null)
+                            {
+                                deleteMethod.Invoke(propertyLibObj, new[] { existingProperty! });
+                                deleted = true;
+                                Log($"UpsertCustomEnumProperty: deleted non-enum property '{name}' via reflection");
+                            }
+                        }
+                        catch (Exception ex)
+                        {
+                            Log($"UpsertCustomEnumProperty: reflection DeleteProperty failed: {ex.Message}");
+                        }
                     }
+
+                    if (!deleted)
+                    {
+                        return ErrorJson($"Property '{name}' exists but is not a CustomEnumProperty and cannot be deleted automatically");
+                    }
+
+                    isCreate = true;
+                    action = "create";
                 }
 
                 if (isCreate)
                 {
-                    // Case C: Create new CustomEnumProperty
+                    // 永久保留 — ApiDump 无等价 SDK API（无 CreateCustomEnumProperty 或 CreateCustomEnum 公开入口）。
                     var createMethod = propertyLibObj.GetType().GetMethod("CreateCustomEnumProperty",
                         BindingFlags.Public | BindingFlags.Instance | BindingFlags.FlattenHierarchy);
                     if (createMethod == null)

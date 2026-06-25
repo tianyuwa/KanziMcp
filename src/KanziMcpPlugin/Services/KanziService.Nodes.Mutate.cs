@@ -52,8 +52,46 @@ namespace KanziMcpPlugin.Services
                 var normalizedType = NormalizeNodeTypeName(nodeType);
                 Log($"CreateNode: parentItem={parentItem.GetType().Name}, internalParent={internalParent?.GetType().Name}, project={project.GetType().Name}, internalProject={internalProject?.GetType().Name}");
 
-                // Try to create node using various methods
+                // ═══════════════════════════════════════════════════════════
+                // SDK 优先路径: Project.CreateProjectItem<T>（卡片 11 新增）
+                // ═══════════════════════════════════════════════════════════
                 object? newNode = null;
+                var sdkProject = GetSdkProject();
+                if (sdkProject != null && parentItem is ProjectItem sdkParent)
+                {
+                    var nodeTypeObj = FindNodeType(nodeType);
+                    if (nodeTypeObj != null)
+                    {
+                        try
+                        {
+                            var createProjectItemMethod = typeof(Project).GetMethod("CreateProjectItem",
+                                BindingFlags.Public | BindingFlags.Instance | BindingFlags.FlattenHierarchy);
+                            if (createProjectItemMethod != null && createProjectItemMethod.IsGenericMethodDefinition)
+                            {
+                                var genericMethod = createProjectItemMethod.MakeGenericMethod(nodeTypeObj);
+                                var createName = nodeName ?? $"New{nodeType}";
+                                newNode = genericMethod.Invoke(sdkProject, new object[] { createName, sdkParent });
+                                if (newNode != null)
+                                    Log($"CreateNode: SDK CreateProjectItem<{nodeTypeObj.Name}> succeeded for '{createName}'");
+                            }
+                        }
+                        catch (Exception ex)
+                        {
+                            Log($"CreateNode: SDK CreateProjectItem<{nodeType}> failed ({ex.Message}), falling back to reflection strategies");
+                        }
+                    }
+                    else
+                    {
+                        Log($"CreateNode: FindNodeType('{nodeType}') returned null, falling back to reflection strategies");
+                    }
+                }
+
+                if (newNode == null)
+                    Log($"CreateNode: SDK path not available or failed, using reflection strategies");
+
+                // ═══════════════════════════════════════════════════════════
+                // 反射降级策略链（保留全部 8 个现有策略）
+                // ═══════════════════════════════════════════════════════════
 
                 // Strategy 1: CreateChildNode method with string type name
                 var createMethod = parentItem.GetType().GetMethod("CreateChildNode",
@@ -140,67 +178,7 @@ namespace KanziMcpPlugin.Services
                     }
                 }
 
-                // Strategy 2b: ComponentTypeLibrary — for UI/scene node types
-                if (newNode == null)
-                {
-                    try
-                    {
-                        foreach (var source in new[] { internalProject, project, internalParent ?? parentItem, parentItem })
-                        {
-                            if (source == null) continue;
-                            var ctlProp = source.GetType().GetProperty("ComponentTypeLibrary",
-                                BindingFlags.Public | BindingFlags.Instance | BindingFlags.FlattenHierarchy);
-                            if (ctlProp == null) continue;
-                            var ctl = ctlProp.GetValue(source);
-                            if (ctl is not IEnumerable ctlItems) continue;
-
-                            var allNames = new List<string>();
-                            foreach (var item in ctlItems)
-                            {
-                                var itemName = GetItemName(item);
-                                allNames.Add(itemName);
-                                if (string.Equals(itemName, nodeType, StringComparison.OrdinalIgnoreCase) ||
-                                    string.Equals(NormalizeNodeTypeName(itemName), normalizedType, StringComparison.OrdinalIgnoreCase))
-                                {
-                                    Log($"CreateNode: found ComponentTypeLibrary item: {itemName}");
-                                    var defaultInst = SafeGetProperty(item, "DefaultInstance");
-                                    if (defaultInst != null)
-                                    {
-                                        var cloneMethod = defaultInst.GetType().GetMethod("CloneUnder",
-                                            BindingFlags.Public | BindingFlags.Instance);
-                                        if (cloneMethod != null)
-                                        {
-                                            try
-                                            {
-                                                var pars = cloneMethod.GetParameters();
-                                                var cloneName = nodeName ?? $"New{nodeType}";
-                                                var cloneParent = internalParent ?? parentItem;
-                                                if (pars.Length >= 3)
-                                                    newNode = cloneMethod.Invoke(defaultInst, new[] { cloneName, cloneParent, Enum.GetValues(pars[2].ParameterType).GetValue(0) });
-                                                else
-                                                    newNode = cloneMethod.Invoke(defaultInst, new[] { cloneName, cloneParent });
-                                                if (newNode != null)
-                                                {
-                                                    Log($"CreateNode: created via ComponentTypeLibrary CloneUnder");
-                                                    break;
-                                                }
-                                            }
-                                            catch (Exception ex) { Log($"CreateNode: ComponentTypeLibrary CloneUnder failed: {ex.Message}"); }
-                                        }
-                                    }
-                                }
-                            }
-                            if (newNode != null) break;
-                            if (allNames.Count > 0)
-                                Log($"CreateNode: ComponentTypeLibrary on {source.GetType().Name} has {allNames.Count} items, none match '{nodeType}': {string.Join(", ", allNames.Take(20))}");
-                        }
-                    }
-                    catch (Exception ex)
-                    {
-                        Log($"CreateNode: ComponentTypeLibrary approach failed: {ex.Message}");
-                    }
-                }
-
+                // Strategy 2b (ComponentTypeLibrary) 已删除 — ApiDump L221 确认 SDK 覆盖。
                 // Strategy 3: AddNode or AddChild method
                 if (newNode == null)
                 {
@@ -289,38 +267,7 @@ namespace KanziMcpPlugin.Services
                     }
                 }
 
-                // Strategy 6: Try Project.CreateNode or similar
-                if (newNode == null)
-                {
-                    try
-                    {
-                        var createProjectNodeMethod = project.GetType().GetMethod("CreateNode",
-                            BindingFlags.Public | BindingFlags.Instance | BindingFlags.FlattenHierarchy);
-                        if (createProjectNodeMethod != null)
-                        {
-                            Log($"CreateNode: trying Project.CreateNode");
-                            var parameters = createProjectNodeMethod.GetParameters();
-                            if (parameters.Length >= 2)
-                            {
-                                // Most CreateNode methods need parent and type
-                                var nodeTypeObj = FindNodeType(nodeType);
-                                if (nodeTypeObj != null)
-                                {
-                                    try
-                                    {
-                                        newNode = createProjectNodeMethod.Invoke(project, new[] { parentItem, nodeTypeObj });
-                                    }
-                                    catch { }
-                                }
-                            }
-                        }
-                    }
-                    catch (Exception ex)
-                    {
-                        Log($"CreateNode: Project.CreateNode failed: {ex.Message}");
-                    }
-                }
-
+                // Strategy 6 (Project.CreateNode) 已删除 — ApiDump 无匹配，SDK CreateProjectItem<T> 已覆盖。
                 // Strategy 7: CloneUnder - Find a template node and clone it
                 if (newNode == null)
                 {
@@ -1020,161 +967,6 @@ namespace KanziMcpPlugin.Services
             return best.HasValue ? (best.Value.node, best.Value.path) : (null, null);
         }
 
-        private bool TryExecuteKanziPluginCommand(string commandName, object parentItem, string nodeType,
-            string? nodeName, out object? newNode)
-        {
-            newNode = null;
-            try
-            {
-                var envType = FindTypeInAssemblies("KanziUIEnvironment")
-                    ?? FindTypeInAssemblies("Rightware.Kanzi.Tool.Presentation.Application.KanziUIEnvironment");
-                if (envType == null)
-                    return false;
-
-                var getPluginCommand = envType.GetMethod("GetPluginCommand",
-                    BindingFlags.Public | BindingFlags.Static, null, new[] { typeof(string) }, null);
-                if (getPluginCommand == null)
-                    return false;
-
-                object? pluginCommand = null;
-                try
-                {
-                    pluginCommand = getPluginCommand.Invoke(null, new object[] { commandName });
-                }
-                catch { }
-
-                if (pluginCommand == null)
-                {
-                    var getAll = envType.GetMethod("GetPluginCommands", BindingFlags.Public | BindingFlags.Static);
-                    var searchToken = commandName.StartsWith("Create", StringComparison.OrdinalIgnoreCase)
-                        ? commandName.Substring(6)
-                        : commandName;
-                    if (getAll?.Invoke(null, null) is IEnumerable commands)
-                    {
-                        foreach (var cmd in commands)
-                        {
-                            var cmdName = cmd?.GetType().GetProperty("Name")?.GetValue(cmd)?.ToString()
-                                ?? cmd?.GetType().GetProperty("CommandName")?.GetValue(cmd)?.ToString()
-                                ?? cmd?.ToString();
-                            if (cmdName != null &&
-                                (cmdName.Contains(searchToken, StringComparison.OrdinalIgnoreCase) ||
-                                 cmdName.Contains(commandName, StringComparison.OrdinalIgnoreCase)))
-                            {
-                                pluginCommand = cmd;
-                                Log($"TryExecuteKanziPluginCommand: resolved '{commandName}' -> '{cmdName}'");
-                                break;
-                            }
-                        }
-                    }
-                }
-
-                if (pluginCommand == null || _studio == null)
-                    return false;
-
-                var listType = typeof(List<>).MakeGenericType(parentItem.GetType());
-                var itemsList = (System.Collections.IList)Activator.CreateInstance(listType)!;
-                itemsList.Add(parentItem);
-
-                MethodInfo? execByCommand = null;
-                MethodInfo? execByName = null;
-                foreach (var m in _studio.GetType().GetMethods(
-                             BindingFlags.Public | BindingFlags.Instance | BindingFlags.FlattenHierarchy))
-                {
-                    if (m.Name != "ExecutePluginCommand") continue;
-                    var p = m.GetParameters();
-                    if (p.Length != 2) continue;
-                    if (p[0].ParameterType == typeof(string))
-                        execByName = m;
-                    else if (p[0].ParameterType.IsInstanceOfType(pluginCommand) ||
-                             p[0].ParameterType.IsAssignableFrom(pluginCommand.GetType()))
-                        execByCommand = m;
-                }
-
-                if (execByCommand != null)
-                    execByCommand.Invoke(_studio, new[] { pluginCommand, itemsList });
-                else if (execByName != null)
-                    execByName.Invoke(_studio, new object[] { commandName, itemsList });
-                else
-                    return false;
-
-                var childName = nodeName ?? $"New{nodeType}";
-                newNode = GetChildren(parentItem).FirstOrDefault(c =>
-                {
-                    var n = GetItemName(c);
-                    return n == childName || n.Contains(nodeType, StringComparison.OrdinalIgnoreCase);
-                });
-                return newNode != null;
-            }
-            catch (Exception ex)
-            {
-                Log($"TryExecuteKanziPluginCommand({commandName}) failed: {ex.Message}");
-                return false;
-            }
-        }
-
-        /// <summary>
-        /// 将 PluginInterface.ProjectItem 转换为内部类型。
-        /// PluginWrapper 有多个同名 WrappedItem（泛型接口），GetProperty 会歧义，
-        /// 必须用 GetProperties 逐个找。回退到全程序集扫描 GetProjectItemFor 静态方法。
-        /// </summary>
-        private object? GetInternalProjectItem(object? pluginItem)
-        {
-            if (pluginItem == null) return null;
-            try
-            {
-                var typeName = pluginItem.GetType().Name;
-                if (SafeGetProperty(pluginItem, "HasPluginWrapper") as bool? == true)
-                    return pluginItem;
-
-                // 策略1: GetProperties 逐个找 WrappedItem（避开同名歧义）
-                foreach (var prop in pluginItem.GetType().GetProperties(
-                    BindingFlags.Public | BindingFlags.Instance | BindingFlags.FlattenHierarchy))
-                {
-                    if (prop.Name != "WrappedItem") continue;
-                    try
-                    {
-                        var val = prop.GetValue(pluginItem);
-                        if (val != null && val != pluginItem && val.GetType() != pluginItem.GetType())
-                        {
-                            Log($"GetInternalProjectItem: WrappedItem {typeName} -> {val.GetType().Name}");
-                            return val;
-                        }
-                    }
-                    catch { }
-                }
-
-                // 策略2: 全程序集扫描 GetProjectItemFor / GetPluginWrapperFor 静态方法
-                foreach (var assembly in AppDomain.CurrentDomain.GetAssemblies())
-                {
-                    try
-                    {
-                        foreach (var t in assembly.GetTypes())
-                        {
-                            foreach (var m in t.GetMethods(BindingFlags.Public | BindingFlags.Static))
-                            {
-                                if ((m.Name != "GetProjectItemFor" && m.Name != "GetPluginWrapperFor") ||
-                                    m.GetParameters().Length != 1) continue;
-                                try
-                                {
-                                    var result = m.Invoke(null, new object[] { pluginItem });
-                                    if (result != null && result != pluginItem && result.GetType() != pluginItem.GetType())
-                                    {
-                                        Log($"GetInternalProjectItem: {m.DeclaringType!.Name}.{m.Name} {typeName} -> {result.GetType().Name}");
-                                        return result;
-                                    }
-                                }
-                                catch { }
-                            }
-                        }
-                    }
-                    catch { }
-                }
-            }
-            catch (Exception ex) { Log($"GetInternalProjectItem error: {ex.Message}"); }
-            Log($"GetInternalProjectItem: could not convert {pluginItem.GetType().Name}");
-            return pluginItem;
-        }
-
         /// <summary>
         /// Find type in all loaded assemblies by name (case-insensitive)
         /// </summary>
@@ -1191,67 +983,6 @@ namespace KanziMcpPlugin.Services
                 }
                 catch { }
             }
-            return null;
-        }
-
-        /// <summary>
-        /// 查找节点类型
-        /// </summary>
-        private Type? FindNodeType(string typeName)
-        {
-            // 常见的 Kanzi 节点类型命名空间
-            var namespaces = new[] {
-                "Rightware.Kanzi",
-                "Rightware.Kanzi.Presentation",
-                "Rightware.Kanzi.Tool",
-                "Kanzi"
-            };
-
-            // 首先尝试直接匹配（不区分大小写）
-            foreach (var assembly in AppDomain.CurrentDomain.GetAssemblies())
-            {
-                try
-                {
-                    var types = assembly.GetTypes();
-                    // 首先尝试精确匹配
-                    var type = types.FirstOrDefault(t => t.Name.Equals(typeName, StringComparison.OrdinalIgnoreCase));
-                    if (type != null) return type;
-                }
-                catch { }
-            }
-
-            // 尝试在特定命名空间中查找
-            foreach (var assembly in AppDomain.CurrentDomain.GetAssemblies())
-            {
-                try
-                {
-                    foreach (var ns in namespaces)
-                    {
-                        var fullName = $"{ns}.{typeName}";
-                        var type = assembly.GetType(fullName);
-                        if (type != null) return type;
-
-                        // 尝试其他可能的命名空间变体
-                        var altName = $"{ns}.Logic.{typeName}";
-                        type = assembly.GetType(altName);
-                        if (type != null) return type;
-                    }
-                }
-                catch { }
-            }
-
-            // 最后尝试模糊匹配
-            foreach (var assembly in AppDomain.CurrentDomain.GetAssemblies())
-            {
-                try
-                {
-                    var type = assembly.GetTypes()
-                        .FirstOrDefault(t => t.Name.Contains(typeName) || (t.FullName?.Contains(typeName) ?? false));
-                    if (type != null) return type;
-                }
-                catch { }
-            }
-
             return null;
         }
 

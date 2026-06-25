@@ -16,7 +16,7 @@ namespace KanziMcpPlugin.Services
 
         private string PropertySetSuccessResult(
             string path, string itemType, string property, string? oldValue,
-            object? newValue, string appliedVia)
+            object? newValue, string appliedVia, string legacyFallback = "")
         {
             return SafeSerialize(new
             {
@@ -27,7 +27,8 @@ namespace KanziMcpPlugin.Services
                 property,
                 oldValue,
                 newValue = newValue?.ToString(),
-                appliedVia
+                appliedVia,
+                legacyFallback
             });
         }
 
@@ -122,6 +123,24 @@ namespace KanziMcpPlugin.Services
                 // apply 模式 - 多策略尝试设置属性
                 try
                 {
+                    // ═══════════════════════════════════════════════════════════
+                    // SDK 优先路径: PropertyContainer.Set（卡片 08 新增）
+                    // ═══════════════════════════════════════════════════════════
+                    if (TryApplyPropertyViaSdk(item, property, newValueObj, force,
+                            out var sdkAppliedVia, out var sdkError))
+                    {
+                        Log($"SetProperty: SDK path succeeded via {sdkAppliedVia}");
+                        return PropertySetSuccessResult(path, itemType, property, oldValue,
+                            newValueObj?.ToString(), sdkAppliedVia, "None");
+                    }
+
+                    if (sdkError != null)
+                        Log($"SetProperty: SDK path failed ({sdkError}), falling back to reflection strategies");
+
+                    // ═══════════════════════════════════════════════════════════
+                    // 反射降级策略链（保留全部现有分支）
+                    // ═══════════════════════════════════════════════════════════
+
                     // 策略1: SetPropertyWithCommand(string, object) — 支持 undo/redo
                     var setMethod = item.GetType().GetMethod("SetPropertyWithCommand",
                         BindingFlags.Public | BindingFlags.Instance | BindingFlags.FlattenHierarchy,
@@ -1274,6 +1293,22 @@ namespace KanziMcpPlugin.Services
                         var newValue = propEntry.Value;
                         try
                         {
+                            // SDK 优先路径（卡片 18 新增）— 与 SetProperty 行为对齐
+                            if (TryApplyPropertyViaSdk(node, propName, newValue, ignoreReadOnly,
+                                    out var via, out var sdkErr))
+                            {
+                                applied.Add(new Dictionary<string, object?>
+                                {
+                                    ["node"] = nodePath,
+                                    ["property"] = propName,
+                                    ["status"] = "applied",
+                                    ["appliedVia"] = via
+                                });
+                                setCount++;
+                                continue;
+                            }
+
+                            // SDK 失败 → 降级到原有反射逻辑
                             // 尝试设置属性
                             var setMethod = node.GetType().GetMethod("SetPropertyWithCommand",
                                 BindingFlags.Public | BindingFlags.Instance | BindingFlags.FlattenHierarchy,

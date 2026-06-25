@@ -212,11 +212,18 @@ namespace KanziMcpPlugin.Services
                         {
                             foreach (var item in lib)
                             {
+                                // SDK 优先：DisplayName 可从 ProjectItem.TypeDisplayName 读取
+                                var displayName = (item is ProjectItem pi ? pi.TypeDisplayName : null)
+                                    ?? SafeGetProperty(item, "DisplayName") as string
+                                    ?? GetItemName(item);
+                                // Category 非标准 SDK 属性，保留反射兜底
+                                var category = SafeGetProperty(item, "Category") as string ?? "General";
+
                                 types.Add(new Dictionary<string, object?>
                                 {
                                     ["type"] = GetItemName(item),
-                                    ["displayName"] = SafeGetProperty(item, "DisplayName") as string ?? GetItemName(item),
-                                    ["category"] = SafeGetProperty(item, "Category") as string ?? "General"
+                                    ["displayName"] = displayName,
+                                    ["category"] = category
                                 });
                             }
                         }
@@ -277,36 +284,7 @@ namespace KanziMcpPlugin.Services
                 if (item == null)
                     return ErrorJson($"节点未找到: {path}");
 
-                var bindings = new List<Dictionary<string, object?>>();
-
-                // API dump 确认：ProjectItem 有 Bindings 属性 (IEnumerable<IBindingItem>)
-                var bindingsProp = item.GetType().GetProperty("Bindings",
-                    BindingFlags.Public | BindingFlags.Instance | BindingFlags.FlattenHierarchy);
-                if (bindingsProp != null)
-                {
-                    try
-                    {
-                        var bindingsCollection = bindingsProp.GetValue(item) as IEnumerable;
-                        if (bindingsCollection != null)
-                        {
-                            foreach (var binding in bindingsCollection)
-                            {
-                                try
-                                {
-                                    bindings.Add(new Dictionary<string, object?>
-                                    {
-                                        // Property 字段可能是 PropertyTypePluginWrapper 类型名，需提取实际属性名
-                                        ["property"] = ExtractBindingProperty(SafeGetProperty(binding, "Property")),
-                                        ["code"] = SafeGetProperty(binding, "Code") as string ?? "",
-                                        ["mode"] = SafeGetProperty(binding, "Mode")?.ToString() ?? "OneWay"
-                                    });
-                                }
-                                catch { }
-                            }
-                        }
-                    }
-                    catch { }
-                }
+                var bindings = GetBindings(item);
 
                 return SafeSerialize(new
                 {
@@ -404,7 +382,15 @@ namespace KanziMcpPlugin.Services
                     {
                         try
                         {
-                            var textValue = SafeGetProperty(child, "Text") as string;
+                            // SDK 优先：通过 PropertyContainer.Get 读取
+                            string? textValue = null;
+                            if (child is PropertyContainer pc)
+                            {
+                                try { textValue = pc.Get("Text") as string; }
+                                catch { }
+                            }
+                            textValue ??= SafeGetProperty(child, "Text") as string;
+
                             if (!string.IsNullOrEmpty(textValue) && textValue.IndexOf(searchText, comparison) >= 0)
                                 matchReasons.Add("text");
                         }

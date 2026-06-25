@@ -5,6 +5,7 @@ using System.Linq;
 using System.Reflection;
 using System.Text.Json;
 using System.Text.RegularExpressions;
+using Rightware.Kanzi.Studio.PluginInterface;
 
 namespace KanziMcpPlugin.Services
 {
@@ -190,7 +191,9 @@ namespace KanziMcpPlugin.Services
             {
                 for (var i = 0; i < bindings.Count; i++)
                 {
-                    var prop = ExtractBindingProperty(SafeGetProperty(bindings[i], "Property"));
+                    var prop = bindings[i] is Binding sdkB
+                        ? ExtractBindingPropertyFromSdk(sdkB.Property)
+                        : ExtractBindingProperty(SafeGetProperty(bindings[i], "Property"));
                     if (string.Equals(prop, propertyName, StringComparison.OrdinalIgnoreCase))
                     {
                         resolvedIndex = i;
@@ -207,8 +210,10 @@ namespace KanziMcpPlugin.Services
                 }
             }
 
-            var oldCode = SafeGetProperty(targetBinding, "Code") as string ?? "";
-            var targetProperty = ExtractBindingProperty(SafeGetProperty(targetBinding, "Property"));
+            var oldCode = targetBinding is Binding sdkTb ? sdkTb.Code ?? "" : SafeGetProperty(targetBinding, "Code") as string ?? "";
+            var targetProperty = targetBinding is Binding sdkTb2
+                ? ExtractBindingPropertyFromSdk(sdkTb2.Property)
+                : ExtractBindingProperty(SafeGetProperty(targetBinding, "Property"));
 
             result["bindingIndex"] = resolvedIndex;
             result["property"] = targetProperty;
@@ -247,34 +252,35 @@ namespace KanziMcpPlugin.Services
             return result;
         }
 
-        private List<object> GetBindingsList(object item)
-        {
-            var list = new List<object>();
-            var bindingsProp = item.GetType().GetProperty("Bindings",
-                BindingFlags.Public | BindingFlags.Instance | BindingFlags.FlattenHierarchy);
-            if (bindingsProp == null)
-                return list;
-
-            if (bindingsProp.GetValue(item) is not IEnumerable bindings)
-                return list;
-
-            foreach (var binding in bindings)
-                list.Add(binding);
-            return list;
-        }
-
         private List<Dictionary<string, object?>> SerializeBindingsSnapshot(IReadOnlyList<object> bindings)
         {
             var snapshot = new List<Dictionary<string, object?>>();
             for (var i = 0; i < bindings.Count; i++)
             {
                 var binding = bindings[i];
+                string property, code, mode;
+
+                if (binding is Binding sdkBinding)
+                {
+                    // SDK 强类型路径
+                    property = ExtractBindingPropertyFromSdk(sdkBinding.Property);
+                    code = sdkBinding.Code ?? "";
+                    mode = sdkBinding.IsBindingActive ? "Active" : "Inactive";
+                }
+                else
+                {
+                    // 反射兜底（wrapper 类型）
+                    property = ExtractBindingProperty(SafeGetProperty(binding, "Property"));
+                    code = SafeGetProperty(binding, "Code") as string ?? "";
+                    mode = SafeGetProperty(binding, "Mode")?.ToString() ?? "OneWay";
+                }
+
                 snapshot.Add(new Dictionary<string, object?>
                 {
                     ["index"] = i,
-                    ["property"] = ExtractBindingProperty(SafeGetProperty(binding, "Property")),
-                    ["code"] = SafeGetProperty(binding, "Code") as string ?? "",
-                    ["mode"] = SafeGetProperty(binding, "Mode")?.ToString() ?? "OneWay"
+                    ["property"] = property,
+                    ["code"] = code,
+                    ["mode"] = mode
                 });
             }
             return snapshot;
@@ -282,6 +288,11 @@ namespace KanziMcpPlugin.Services
 
         private bool TrySetBindingCode(object binding, string newCode, out string error)
         {
+            // SDK 强类型路径优先
+            if (TrySetBindingCodeViaSdk(binding, newCode, out error))
+                return true;
+
+            // 反射兜底 — 用于非 Binding wrapper 类型
             error = "";
             var bf = BindingFlags.Public | BindingFlags.Instance | BindingFlags.FlattenHierarchy;
             var type = binding.GetType();
@@ -331,18 +342,12 @@ namespace KanziMcpPlugin.Services
 
                     try
                     {
-                        var bindingsProp = child.GetType().GetProperty("Bindings",
-                            BindingFlags.Public | BindingFlags.Instance | BindingFlags.FlattenHierarchy);
-                        if (bindingsProp != null)
+                        var bindings = GetBindings(child);
+                        foreach (var bindingDict in bindings)
                         {
-                            var bindings = bindingsProp.GetValue(child) as IEnumerable;
-                            if (bindings != null)
-                            {
-                                foreach (var binding in bindings)
-                                {
-                                    totalBindings++;
-                                    var code = SafeGetProperty(binding, "Code") as string ?? "";
-                                    var propertyName = ExtractBindingProperty(SafeGetProperty(binding, "Property"));
+                            totalBindings++;
+                            var code = bindingDict.TryGetValue("code", out var c) ? c as string ?? "" : "";
+                            var propertyName = bindingDict.TryGetValue("property", out var p) ? p as string ?? "unknown" : "unknown";
 
                                     if (string.IsNullOrWhiteSpace(code))
                                     {
@@ -372,8 +377,6 @@ namespace KanziMcpPlugin.Services
                                         });
                                     }
                                 }
-                            }
-                        }
                     }
                     catch { }
 

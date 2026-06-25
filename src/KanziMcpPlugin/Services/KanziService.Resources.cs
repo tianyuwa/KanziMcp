@@ -255,18 +255,50 @@ namespace KanziMcpPlugin.Services
                 };
             }
 
-            var logicProject = ResolveLogicProject(GetInternalProjectItem(project) ?? project) ?? project;
-            var textureParent = ResolveTextureParent(logicProject, texturesFolder, "Textures");
-            Log($"ImportImage: file={filePath}, logicProject={logicProject.GetType().Name}, textureParent={textureParent?.GetType().Name ?? "null"}");
+            // 路径规范化：E:/... → E:\...，解决正斜杠导致 Kanzi 拼接非法路径
+            filePath = Path.GetFullPath(filePath);
 
-            var localImagePath = CopyFileToProjectImages(logicProject, filePath) ?? filePath;
-            var importPath = localImagePath;
+            var effectiveName = resourceName ?? Path.GetFileNameWithoutExtension(filePath);
+
+            // 与 Legacy 路径对齐：先将文件复制到项目 Images 目录，避免 Kanzi 拼接外部绝对路径
+            var logicProject = ResolveLogicProject(GetInternalProjectItem(project) ?? project) ?? project;
+            var localImagePath = CopyFileToProjectImages(logicProject, filePath);
+            var importPath = localImagePath ?? filePath;
+            if (localImagePath != null)
+                Log($"ImportImage: copied to project Images: {localImagePath}");
+
+            // ═══════════════════════════════════════════════════════════
+            // SDK 优先路径: Commands.ImportImages（Kanzi PluginInterface SDK）
+            // — 使用项目内相对路径，避免 Kanzi 拼接外部绝对路径到 Images 下
+            // — ImportImages 第三个参数 false = 不复制（已手动复制到 Images）
+            // ═══════════════════════════════════════════════════════════
+            var sdkProject = GetSdkProject();
+            if (sdkProject != null)
+            {
+                if (TryImportImagesViaSdk(sdkProject, new[] { importPath }, out var sdkErr))
+                {
+                    if (TryCompleteSdkImageImport(sdkProject, project, texturesFolder,
+                            filePath, effectiveName, out var sdkResult) && sdkResult != null)
+                        return sdkResult;
+
+                    Log($"ImportImage: SDK import succeeded but post-processing failed for '{effectiveName}', falling back to legacy reflection");
+                }
+                else
+                {
+                    Log($"ImportImage: SDK import failed ({sdkErr?.Message}), falling back to legacy reflection");
+                }
+            }
+
+            // ═══════════════════════════════════════════════════════════
+            // 反射降级路径（现有策略 1-5）
+            // ═══════════════════════════════════════════════════════════
+            var textureParent = ResolveTextureParent(logicProject, texturesFolder, "Textures");
+            Log($"ImportImage: file={importPath}, logicProject={logicProject.GetType().Name}, textureParent={textureParent?.GetType().Name ?? "null"}");
             Log($"ImportImage: local image path for import: {importPath}");
 
             var imageFile = TryImportImageFile(logicProject, importPath);
             if (imageFile == null && !string.Equals(importPath, filePath, StringComparison.OrdinalIgnoreCase))
                 imageFile = TryImportImageFile(logicProject, filePath);
-            var effectiveName = resourceName ?? Path.GetFileNameWithoutExtension(filePath);
 
             // Strategy 1: Clone template texture + bind ImageFile (most reliable in Kanzi)
             if (imageFile != null && textureParent != null)
@@ -619,7 +651,30 @@ namespace KanziMcpPlugin.Services
                 if (meshesFolder == null)
                     return ErrorJson($"Cannot find or create resource folder: {targetFolder}");
 
-                // 使用 Kanzi API 导入 FBX
+                // ═══════════════════════════════════════════════════════════
+                // SDK 优先路径: project.CreateProjectItem<Asset3DSourceFile>
+                //                 + Commands.ImportAsset3DSourceFile
+                // ═══════════════════════════════════════════════════════════
+                var sdkProject = GetSdkProject();
+                if (sdkProject != null &&
+                    TryImportFbxViaSdk(sdkProject, filePath, resourceName, out var sdkImported) &&
+                    sdkImported != null)
+                {
+                    Log($"ImportFbx: SDK path succeeded, path={GetItemPath(sdkImported)}");
+                    return SafeSerialize(new
+                    {
+                        success = true,
+                        imported = true,
+                        path = GetItemPath(sdkImported),
+                        name = GetItemName(sdkImported),
+                        type = GetItemType(sdkImported),
+                        sourceFile = filePath
+                    });
+                }
+
+                Log("ImportFbx: SDK path failed or not available, falling back to legacy reflection");
+
+                // 使用 Kanzi API 导入 FBX（反射降级路径）
                 // 策略1: 使用 Import 方法
                 var importMethod = meshesFolder.GetType().GetMethod("Import",
                     BindingFlags.Public | BindingFlags.Instance | BindingFlags.FlattenHierarchy,

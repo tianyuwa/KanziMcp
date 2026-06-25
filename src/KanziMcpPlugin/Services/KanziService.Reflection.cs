@@ -8,6 +8,12 @@ using System.Text.Json;
 using System.Text.RegularExpressions;
 using Rightware.Kanzi.Studio.PluginInterface;
 
+// 调用边界规则:
+// - SDK 路径 (Sdk.cs) 仅使用基础类型转换，不调用 Wrapper 解包方法。
+// - Wrapper 解包（本文件中的 SafeConvertValue 等）仅供反射降级路径使用。
+// - 任何新增代码如需解包 Wrapper 值，必须显式调用 Reflection.SafeConvertValue。
+// - "永久反射兜底区"标记的方法严禁改动内部实现。
+
 namespace KanziMcpPlugin.Services
 {
     public partial class KanziService
@@ -34,7 +40,7 @@ namespace KanziMcpPlugin.Services
         /// 返回类型为 PluginInterface.Project。KanziStudio 接口也声明了此属性。
         /// FlattenHierarchy 或接口查找都应该能找到。
         /// </remarks>
-        private object? GetActiveProject()
+        private object? GetActiveProjectLegacyReflection()
         {
             if (_studio == null)
             {
@@ -105,7 +111,7 @@ namespace KanziMcpPlugin.Services
 
         /// <summary>通过路径获取 ProjectItem</summary>
         /// <remarks>
-        /// API dump 确认：Project 上没有 GetProjectItem(string) 方法。
+        /// API dump 确认：Project 上没有 GetProjectItemLegacyReflection(string) 方法。
         /// 但 ProjectItemInterface 有 GetChildByName(string) 方法。
         /// 实际实现是遍历路径各段，逐级用 GetChildByName 查找。
         /// 另外 ProjectInterface 有 GetItemByPath(ProjectItemPath)，但需要 ProjectItemPath 类型。
@@ -156,12 +162,12 @@ namespace KanziMcpPlugin.Services
         /// - "Screens/Screen" （不带项目名前缀）
         /// - "kanzi_mcp/Screens/Screen" （带项目名前缀）
         /// </remarks>
-        private object? GetProjectItem(string path)
+        private object? GetProjectItemLegacyReflection(string path)
         {
-            var project = GetActiveProject();
+            var project = GetActiveProjectLegacyReflection();
             if (project == null)
             {
-                Log($"GetProjectItem('{path}'): no active project");
+                Log($"GetProjectItemLegacyReflection('{path}'): no active project");
                 return null;
             }
 
@@ -178,12 +184,12 @@ namespace KanziMcpPlugin.Services
 
             foreach (var part in parts)
             {
-                var children = GetChildren(current);
+                var children = GetChildrenLegacyReflection(current);
                 var found = false;
 
                 foreach (var child in children)
                 {
-                    var childName = GetItemName(child);
+                    var childName = GetItemNameLegacyReflection(child);
                     if (string.Equals(childName, part, StringComparison.Ordinal))
                     {
                         current = child;
@@ -213,7 +219,7 @@ namespace KanziMcpPlugin.Services
                         catch { }
                     }
 
-                    Log($"GetProjectItem('{path}'): segment '{part}' not found");
+                    Log($"GetProjectItemLegacyReflection('{path}'): segment '{part}' not found");
                     return null;
                 }
             }
@@ -231,7 +237,7 @@ namespace KanziMcpPlugin.Services
         /// 只使用 Children 属性，不再做广泛的 IEnumerable 属性扫描
         /// （之前扫描到 Icon、CustomIcon 等非节点属性导致序列化失败）
         /// </remarks>
-        private List<object> GetChildren(object projectItem)
+        private List<object> GetChildrenLegacyReflection(object projectItem)
         {
             var result = new List<object>();
             var type = projectItem.GetType();
@@ -304,7 +310,7 @@ namespace KanziMcpPlugin.Services
         }
 
         /// <summary>获取 ProjectItem 的名称</summary>
-        private string GetItemName(object item)
+        private string GetItemNameLegacyReflection(object item)
         {
             // 优先用 Name 属性
             var name = SafeGetProperty(item, "Name") as string;
@@ -318,7 +324,7 @@ namespace KanziMcpPlugin.Services
         }
 
         /// <summary>获取 ProjectItem 的路径</summary>
-        private string GetItemPath(object item)
+        private string GetItemPathLegacyReflection(object item)
         {
             // 优先用 Path 属性
             var path = SafeGetProperty(item, "Path") as string;
@@ -332,14 +338,14 @@ namespace KanziMcpPlugin.Services
             path = SafeGetProperty(item, "DisplayPath") as string;
             if (!string.IsNullOrEmpty(path)) return path;
 
-            return GetItemName(item);
+            return GetItemNameLegacyReflection(item);
         }
 
         /// <summary>获取 ProjectItem 的类型名</summary>
         /// <remarks>
         /// API dump 确认 ProjectItem 有 TypeDisplayName 和 SubType 属性
         /// </remarks>
-        private string GetItemType(object item)
+        private string GetItemTypeLegacyReflection(object item)
         {
             var type = SafeGetProperty(item, "TypeDisplayName") as string;
             if (!string.IsNullOrEmpty(type)) return type;
@@ -356,6 +362,14 @@ namespace KanziMcpPlugin.Services
         /// <summary>获取 ProjectItem 的所有属性（安全序列化）</summary>
         private Dictionary<string, object?> GetItemProperties(object item)
         {
+            // SDK 优先路径（卡片 14 新增）
+            // ApiDump 依据：ProjectItem.Properties → IEnumerable<DynamicProperty>（L1241）
+            // 值提取由 SafeConvertValue 完成（Wrapper 解包独立保留）
+            var sdkProps = GetItemPropertiesViaSdk(item);
+            if (sdkProps.Count > 0)
+                return sdkProps;
+
+            // SDK 无结果 → 降级到反射逻辑
             var props = new Dictionary<string, object?>();
             var bf = BindingFlags.Public | BindingFlags.Instance | BindingFlags.FlattenHierarchy;
 
@@ -533,7 +547,12 @@ namespace KanziMcpPlugin.Services
             return null;
         }
 
-        /// <summary>判断对象是否为有效的项目节点（不是原始类型）</summary>
+        /// <summary>
+        /// 永久反射兜底区 — 严禁改动。
+        /// 用于验证对象是否为有效的 Kanzi 项目节点（非原始类型）。
+        /// 即使外部调用栈全部 SDK 化，节点有效性检查最后一环也必须走反射。
+        /// 若需修改，必须先与架构组评审。
+        /// </summary>
         private bool IsValidProjectItem(object item)
         {
             return IsValidProjectItem(item, BindingFlags.Public | BindingFlags.Instance | BindingFlags.FlattenHierarchy);
@@ -878,6 +897,12 @@ namespace KanziMcpPlugin.Services
         /// 重要：Value 属性返回的是 PropertyTypePluginWrapper&lt;T&gt; 对象，
         /// 不是原始 T 值！SafeConvertValue 内部会进一步解包。
         /// </remarks>
+        /// <remarks>
+        /// 永久反射兜底区 — 严禁改动。
+        /// 用于从 DynamicProperty 读取并解包 PropertyTypePluginWrapper&lt;T&gt; 值，
+        /// 确保 JSON (unable to read) / [Wrapper] / _unresolved 语义不变。
+        /// 若需修改，必须先与架构组评审。
+        /// </remarks>
         private object? TryReadPropertyValue(object dynamicProp)
         {
             var propType = dynamicProp.GetType();
@@ -989,6 +1014,13 @@ namespace KanziMcpPlugin.Services
         /// </remarks>
 
         /// </remarks>
+        /// <remarks>
+        /// 永久反射兜底区 — 严禁改动。
+        /// 通用值解包入口，处理 PropertyTypePluginWrapper&lt;T&gt;、ResourceReference、
+        /// NodeReference 等 Kanzi 内部类型。即使外部调用栈全部 SDK 化，
+        /// 值提取最后一环也必须走此方法。
+        /// 若需修改，必须先与架构组评审。
+        /// </remarks>
         private object? SafeConvertValue(object? value, int depth = 0)
         {
             if (value == null) return null;
@@ -1080,6 +1112,11 @@ namespace KanziMcpPlugin.Services
         ///   策略A: DefaultValueTyped（如果不是 "< Null >"）
         ///   策略B: 通过 ProjectItem 上的 GetPropertyValue 方法
         ///   策略C: 返回属性描述信息（名称、类型、默认值），供用户理解
+        /// </remarks>
+        /// <remarks>
+        /// 永久反射兜底区 — 严禁改动。
+        /// 深层 Wrapper 解包入口，处理多层嵌套的 PropertyTypePluginWrapper、
+        /// TypedProperty 等内部类型。若需修改，必须先与架构组评审。
         /// </remarks>
         private object? UnwrapKanziProperty(object wrapper, Type wrapperType, int depth)
         {
@@ -1249,7 +1286,11 @@ namespace KanziMcpPlugin.Services
             return $"[{propTypeName}]";
         }
 
-        /// <summary>提取 Kanzi 引用类型值（NodeReference, ResourceReference）</summary>
+        /// <summary>
+        /// 永久反射兜底区 — 严禁改动。
+        /// 提取 Kanzi 引用类型值（NodeReference, ResourceReference, KzbUrl 等）。
+        /// 若需修改，必须先与架构组评审。
+        /// </summary>
         private object? ExtractReferenceValue(object reference, Type refType)
         {
             var bf = BindingFlags.Public | BindingFlags.Instance | BindingFlags.FlattenHierarchy;
@@ -1297,7 +1338,10 @@ namespace KanziMcpPlugin.Services
             return $"[{refType.Name}]";
         }
 
-        /// <summary>提取 Vector2D/Vector3D 值</summary>
+        /// <summary>
+        /// 永久反射兜底区 — 严禁改动。
+        /// 提取 Vector2D/Vector3D 值。若需修改，必须先与架构组评审。
+        /// </summary>
         private object? ExtractVectorValue(object vector, Type vecType)
         {
             var bf = BindingFlags.Public | BindingFlags.Instance | BindingFlags.FlattenHierarchy;
@@ -1358,6 +1402,11 @@ namespace KanziMcpPlugin.Services
         ///
         /// 例如传入 "Rightware.Kanzi.Tool.Logic.Project.Plugin.PropertyWrappers.PropertyTypePluginWrapper`1[...] PageHost.DefaultSubPage"
         /// 应返回 "PageHost.DefaultSubPage"
+        /// </remarks>
+        /// <remarks>
+        /// 永久反射兜底区 — 严禁改动。
+        /// 用于解析绑定属性名（PropertyTypePluginWrapper / DynamicProperty → 字符串）。
+        /// 若需修改，必须先与架构组评审。
         /// </remarks>
         private string ExtractBindingProperty(object? propObj)
         {
