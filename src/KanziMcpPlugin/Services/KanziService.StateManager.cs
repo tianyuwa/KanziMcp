@@ -25,6 +25,80 @@ namespace KanziMcpPlugin.Services
         private const int MaxApplyBatchSize = 16;
         private const int PumpWpfEveryNStates = 5;
 
+        private static class BatchSession
+        {
+            public static object? LogicProject;
+            public static bool IsActive;
+            public static int BatchIndex;
+            public static int TotalBatches;
+        }
+
+        private object? GetLogicProject()
+        {
+            var internalProject = GetInternalProjectItem(_studio!.ActiveProject);
+            return ResolveLogicProject(internalProject) ?? internalProject;
+        }
+
+        private void BeginStudioBatchModification(string batchName)
+        {
+            var project = GetLogicProject();
+            if (project == null)
+            {
+                Log("BeginStudioBatchModification: LogicProject is null, batch mod skipped (WARNING)");
+                return;
+            }
+            try
+            {
+                var type = project.GetType();
+                var bf = BindingFlags.Public | BindingFlags.Instance;
+                type.GetMethod("BeginBatchModification", bf, null, Type.EmptyTypes, null)
+                    ?.Invoke(project, null);
+                type.GetMethod("BeginGroupCommand", bf, null, new[] { typeof(string) }, null)
+                    ?.Invoke(project, new object[] { batchName });
+                BatchSession.LogicProject = project;
+                Log($"BeginStudioBatchModification: '{batchName}' started");
+            }
+            catch (Exception ex)
+            {
+                Log($"BeginStudioBatchModification: ERROR {ex.Message}");
+                BatchSession.LogicProject = null;
+            }
+        }
+
+        private void CommitStudioBatchModification()
+        {
+            if (BatchSession.LogicProject == null) return;
+            try
+            {
+                var project = BatchSession.LogicProject;
+                var type = project.GetType();
+                var bf = BindingFlags.Public | BindingFlags.Instance;
+                type.GetMethod("EndGroupCommand", bf, null, Type.EmptyTypes, null)
+                    ?.Invoke(project, null);
+                type.GetMethod("CommitBatchModification", bf, null, Type.EmptyTypes, null)
+                    ?.Invoke(project, null);
+                Log("CommitStudioBatchModification: committed");
+            }
+            catch (Exception ex)
+            {
+                Log($"CommitStudioBatchModification: ERROR {ex.Message}");
+            }
+            finally
+            {
+                BatchSession.LogicProject = null;
+            }
+        }
+
+        private void EnsureBatchClosed(string reason)
+        {
+            if (!BatchSession.IsActive) return;
+            Log($"EnsureBatchClosed: closing batch ({reason})");
+            CommitStudioBatchModification();
+            BatchSession.IsActive = false;
+            BatchSession.BatchIndex = 0;
+            BatchSession.TotalBatches = 0;
+        }
+
         /// <summary>Cached CustomEnum options per groupProperty (batchIndex>0 apply skips PropertyTypeLibrary scan).</summary>
         private static readonly Dictionary<string, Dictionary<string, int>> EnumOptionsCache =
             new Dictionary<string, Dictionary<string, int>>(StringComparer.Ordinal);
@@ -256,6 +330,34 @@ namespace KanziMcpPlugin.Services
                 Log($"CreateStateManager: apply batch {batchIndex}, states [{startIdx}..{endIdx}), " +
                     $"payload={payloadCount}, grandTotal={grandTotal}, partial={partialPayload}");
 
+                // === Batch session management ===
+                if (batchIndex == 0)
+                {
+                    if (BatchSession.IsActive)
+                    {
+                        Log("BatchSession: stale session detected, force-closing");
+                        EnsureBatchClosed("stale-reset");
+                    }
+                    BeginStudioBatchModification($"Create State Manager {managerName}");
+                    BatchSession.IsActive = BatchSession.LogicProject != null;
+                    if (BatchSession.IsActive)
+                    {
+                        BatchSession.BatchIndex = batchIndex;
+                        BatchSession.TotalBatches = applyTotalBatches;
+                        Log($"BatchSession: opened batch {batchIndex + 1}/{applyTotalBatches}");
+                    }
+                    else
+                    {
+                        Log("BatchSession: WARNING — batch mod not active, continuing without Studio batch");
+                    }
+                }
+                else if (!BatchSession.IsActive)
+                {
+                    Log("BatchSession: WARNING — apply without active session; opening new batch (resume)");
+                    BeginStudioBatchModification($"Create State Manager {managerName} (resume)");
+                    BatchSession.IsActive = BatchSession.LogicProject != null;
+                }
+
                 // 使用 PluginInterface 强类型 API（与 createStateManager 参考插件一致）
                 var pluginProject = _studio!.ActiveProject;
                 Log($"CreateStateManager: using PluginInterface Project API");
@@ -270,7 +372,11 @@ namespace KanziMcpPlugin.Services
                 {
                     string fullPath = $"State Managers/{managerName}/{groupName}";
                     if (pluginProject.GetProjectItem(fullPath) != null)
+                    {
+                        if (BatchSession.IsActive)
+                            EnsureBatchClosed("early-return");
                         return ErrorJson($"State Manager group already exists at '{fullPath}'. Cannot overwrite.");
+                    }
 
                     string managerPath = $"State Managers/{managerName}";
                     ProjectItem managerItem = pluginProject.GetProjectItem(managerPath);
@@ -286,11 +392,19 @@ namespace KanziMcpPlugin.Services
                     }
 
                     if (managerItem == null)
+                    {
+                        if (BatchSession.IsActive)
+                            EnsureBatchClosed("early-return");
                         return ErrorJson("Failed to create or find StateManager");
+                    }
 
                     stateGroupItem = pluginProject.CreateProjectItem<StateGroup>(groupName, managerItem);
                     if (stateGroupItem == null)
+                    {
+                        if (BatchSession.IsActive)
+                            EnsureBatchClosed("early-return");
                         return ErrorJson("Failed to create StateGroup");
+                    }
 
                     SetProjectItemPropertyTyped(stateGroupItem, "StateGroupControllerPropertyTypeReference", groupProperty);
                     Log($"CreateStateManager: created StateGroup '{groupName}'");
@@ -299,7 +413,11 @@ namespace KanziMcpPlugin.Services
                         strategy, ref templateStateItem);
 
                     if (!result.success)
+                    {
+                        if (BatchSession.IsActive)
+                            EnsureBatchClosed("early-return");
                         return ErrorJson(result.error ?? "Failed to create states");
+                    }
 
                     WriteProgress($"StateManager batch {batchIndex}: {endIdx}/{grandTotal}");
                 }
@@ -309,7 +427,11 @@ namespace KanziMcpPlugin.Services
                     stateGroupItem = pluginProject.GetProjectItem(smPath);
 
                     if (stateGroupItem == null)
+                    {
+                        if (BatchSession.IsActive)
+                            EnsureBatchClosed("early-return");
                         return ErrorJson($"StateGroup not found at '{smPath}'. Run batchIndex=0 first.");
+                    }
 
                     foreach (var child in stateGroupItem.Children)
                     {
@@ -322,7 +444,11 @@ namespace KanziMcpPlugin.Services
                         strategy, ref templateStateItem);
 
                     if (!result.success)
+                    {
+                        if (BatchSession.IsActive)
+                            EnsureBatchClosed("early-return");
                         return ErrorJson(result.error ?? "Failed to create states in batch");
+                    }
 
                     WriteProgress($"StateManager batch {batchIndex}: {endIdx}/{grandTotal}");
                 }
@@ -352,6 +478,12 @@ namespace KanziMcpPlugin.Services
                 sw.Stop();
                 WriteProgress($"StateManager completed: {endIdx}/{grandTotal}, elapsed={sw.Elapsed.TotalSeconds:F1}s");
 
+                if (isLastBatch && BatchSession.IsActive)
+                {
+                    EnsureBatchClosed("completed");
+                    Log($"BatchSession: closed after {batchIndex + 1}/{applyTotalBatches} batches");
+                }
+
                 return SafeSerialize(new
                 {
                     success = true,
@@ -371,7 +503,9 @@ namespace KanziMcpPlugin.Services
             }
             catch (Exception ex)
             {
-                Log($"CreateStateManager failed: {ex.Message}");
+                if (BatchSession.IsActive)
+                    EnsureBatchClosed("error");
+                Log($"CreateStateManager exception: {ex.Message}");
                 return ErrorJson($"CreateStateManager failed: {ex.Message}");
             }
         }
@@ -452,11 +586,12 @@ namespace KanziMcpPlugin.Services
                     if ((i + 1) % 10 == 0)
                         WriteProgress($"StateManager progress: {i + 1}/{batchStates.Count}");
 
-                    if ((i + 1) % PumpWpfEveryNStates == 0)
+                    if (!BatchSession.IsActive && (i + 1) % PumpWpfEveryNStates == 0)
                         PumpWpfMessages();
                 }
 
-                PumpWpfMessages();
+                if (!BatchSession.IsActive)
+                    PumpWpfMessages();
 
                 return (true, null);
             }

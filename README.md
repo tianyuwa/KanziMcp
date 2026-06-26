@@ -2,7 +2,7 @@
 
 通过 [Model Context Protocol (MCP)](https://modelcontextprotocol.io/) 让 AI 助手（Claude Code、Cursor 等）直接查询和操作 **Kanzi Studio** 项目：查节点、改属性、创建/删除节点、导入资源、审计绑定、创建状态机等。
 
-> **当前状态（2026-06）**：MCP 全链路已跑通。Server 与 Plugin 之间使用 **TCP `127.0.0.1:9595`** 通信（类名仍保留 `Pipe` 前缀，实际已是 TCP）。共 **20 个 MCP 工具**，插件业务层采用 **SDK 优先（`Sdk.cs`）+ 反射兜底（`Reflection.cs` / `Mutate.Legacy.cs`）** 双轨架构，并按职责拆分为 partial class 多文件结构。
+> **当前状态（2026-06）**：MCP 全链路已跑通。Server 与 Plugin 之间使用 **TCP `127.0.0.1:9595`** 通信（类名仍保留 `Pipe` 前缀，实际已是 TCP）。共 **20 个 MCP 工具**，插件业务层采用 **SDK 优先（`Sdk.cs`）+ 反射兜底（`Reflection.cs` / `Mutate.Legacy.cs`）** 双轨架构，并按职责拆分为 partial class 多文件结构。状态机批量创建已接入 **Studio Batch Modification**（跨 MCP 批次共用一个 batch session），**500 个 State 约 30+ 秒**（优化前同规模需数十分钟）。
 
 ---
 
@@ -66,7 +66,7 @@
 | TCP 而非 Named Pipe | 绕过跨进程安全上下文限制，固定端口 `9595` |
 | SDK 优先 + 反射兜底 | 核心路径经 `Sdk.cs` 强类型调用；无公开 API 或 SDK 失败时降级到 `Reflection.cs` / `Mutate.Legacy.cs` |
 | preview / apply | 改属性、删节点、创建状态机等操作支持预览模式，避免 AI 误改项目 |
-| 分批执行 | 大批量状态机创建支持 `batchIndex` / `autoGenerateCount`，避免 UI 阻塞 |
+| 分批执行 + Studio Batch | MCP 层 `batchIndex` / `autoGenerateCount` 分批传输；Studio 层 `BeginBatchModification` 跨批次共用一个 session，Preview 仅 patch 1 次 |
 | stderr 日志 | 所有调试日志写 stderr，stdout 只输出 JSON，符合 MCP 规范 |
 
 **Plugin 业务层双轨架构：** `KanziService.Sdk.cs` 封装 `Project`、`ProjectItem`、`PropertyContainer`、`BindingHost`、`Commands` 等官方 API，作为节点查询、属性读写、绑定、资源导入等操作的**首选路径**；`KanziService.Reflection.cs` 提供 Wrapper 解包与 Legacy 遍历兜底；`KanziService.Mutate.Legacy.cs` 隔离无 SDK 公开 API 的黑盒反射（如 `GetInternalProjectItem`）。
@@ -83,6 +83,26 @@
 | **代码精简** | 删除死代码、合并冗余逻辑，`Services` 目录净精简约 **843 行** |
 | **质量提升** | 编译警告从 **53 个**降至 **35 个**；`QueryNodes`、`SetProperty`、`ImportImage` 等热路径已优先使用 SDK |
 | **边界清晰** | `Reflection.cs`（通用反射工具）与 `Properties.cs`（复杂属性写入降级链）被明确定义为**永久兜底区**，防止未来误用 |
+| **状态机性能** | `StateManager.cs` 接入 Studio **Batch Modification**（`BeginBatchModification` / `CommitBatchModification`，跨 MCP 批次 session）；**500 State ≈ 30+ s**（此前同规模约 **35–40 min**），Preview patch 从每命令 1 次降为 **1 次** |
+
+### 状态机创建性能（Batch Modification）
+
+Kanzi Studio 默认对每个 undoable 命令触发 Live Preview patch，大批量创建 State 会出现 O(N²) 耗时。本插件在 `StateManager.cs` 中通过 Logic Project 的 batch API 解决：
+
+| 机制 | 说明 |
+|------|------|
+| **跨 MCP 批次 session** | `batchIndex=0` 开启 batch，`isLastBatch=true` 才 commit；中间 MCP 往返不触发 patch |
+| **Undo 合并** | 整次创建合并为 **1 条** Undo 记录 |
+| **UI 稳定** | batch 活跃时跳过 `PumpWpfMessages`，避免操作期间 UI 重入崩溃 |
+
+**实测（Kanzi 3.9.10）：**
+
+| 规模 | 优化前（估） | 优化后（实测） |
+|------|-------------|----------------|
+| 500 State | ~35–40 min | **~30+ s** |
+| Preview patch 次数 | 数千次（每命令 1 次） | **1 次** |
+
+> MCP 客户端须按 `batchIndex=0..N-1` **顺序连续**调用；中途失败会提交已创建部分并结束 session。
 
 ---
 
@@ -140,7 +160,7 @@ kanziMcpServer/
 │   │   ├── KanziService.Nodes.Mutate.cs    # 节点创建 / 删除
 │   │   ├── KanziService.Properties.cs      # 属性读写 / 批量设置
 │   │   ├── KanziService.CustomProperties.cs # CustomEnumProperty 创建/更新
-│   │   ├── KanziService.StateManager.cs    # StateManager 分批创建
+│   │   ├── KanziService.StateManager.cs    # StateManager 分批创建 + Studio Batch Modification
 │   │   ├── KanziService.Audit.cs           # 四类审计工具
 │   │   ├── KanziService.Resources.cs       # 资源导入 / 诊断
 │   │   ├── KanziService.Status.cs          # 连接与项目状态
@@ -182,7 +202,7 @@ kanziMcpServer/
 | `Nodes.Mutate.cs` | 节点 CRUD | `create_node`, `delete_node` |
 | `Properties.cs` | 属性读写（SDK 优先 + 复杂属性反射降级链） | `set_property`, `batch_set_property`, `get_property_metadata` |
 | `CustomProperties.cs` | CustomEnum 属性 | `upsert_custom_enum_property` |
-| `StateManager.cs` | 状态机创建 | `create_state_manager` |
+| `StateManager.cs` | 状态机创建；MCP 分批 + Studio Batch session（500 State ≈ 30+ s） | `create_state_manager` |
 | `Audit.cs` | 项目审计 | `audit_*` 系列 |
 | `Resources.cs` | 资源导入/诊断 | `import_image`, `import_fbx`, `doctor_resource` |
 | `Reflection.cs` | **反射兜底区**。Wrapper 解包、`SafeConvertValue`、`*LegacyReflection` 路径遍历等通用反射工具 | 被 `Sdk.cs` 及各业务模块在 SDK 失败时调用 |
@@ -335,8 +355,9 @@ AI 客户端连接后会按 MCP 规范依次发送：
 
 1. 先调用 `kanzi_upsert_custom_enum_property` 确保 `groupProperty` 存在
 2. 用 `kanzi_create_state_manager` + `mode=preview` 查看分批计划
-3. 大批量：`autoGenerateCount` + 1 个模板（字符串可用 `{0}` 占位），`batchSize=12~16`，循环 `batchIndex` + `mode=apply`
-4. 超过 200 个 state 需设 `confirmLargeBatch=true`；建议单组不超过 500，过多拆多个 StateGroup
+3. 大批量：`autoGenerateCount` + 1 个模板（字符串可用 `{0}` 占位），`batchSize=12~16`，**按顺序**循环 `batchIndex` + `mode=apply`（Studio 侧自动跨批次共用一个 batch session）
+4. 超过 200 个 state 需设 `confirmLargeBatch=true`；单组上限 **500** State，过多拆多个 StateGroup
+5. **性能参考**：500 State 全量创建约 **30+ 秒**；创建期间避免手动操作 Kanzi Studio UI
 
 ### 审计
 
@@ -586,7 +607,8 @@ Get-Content C:\temp\KanziMcpPlugin.log -Tail 50 -Wait
 | 插件加载失败 | 缺少 `lib/*.dll` | 将 `src/KanziMcpPlugin/lib/` 下所有 DLL 复制到 plugins 目录 |
 | `NETSDK1004` 找不到 assets 文件 | 删除了 `obj/` 但脚本用了 `--no-restore` | 使用最新 `publish.bat`（已含 restore 步骤），或手动 `dotnet restore` |
 | 9595 端口被占用 | 其他程序占用 | 修改 Server/Plugin 端口（需改代码常量）或释放端口 |
-| 状态机创建卡住 | 单次 apply 状态过多 | 减小 `batchSize`，用 `batchIndex` 循环；WPF 消息泵已内置但仍有上限 |
+| 状态机创建很慢 | 未按顺序调用 `batchIndex`，或 Studio batch session 中断 | 确保 `batchIndex=0..N-1` 连续调用；查日志 `BatchSession:` / `BeginStudioBatchModification`；500 State 正常应 **~30+ s** |
+| 状态机创建卡住 / 崩溃 | 创建过程中手动点击 Studio UI | batch 期间勿操作 Studio；失败后可查 `C:\temp\KanziMcpPlugin.log` 中 `EnsureBatchClosed` |
 
 ---
 
@@ -623,7 +645,7 @@ KanziService.*.cs       ← 业务实现（放入对应 partial 文件）
 1. **优先新增 partial 文件**：如 `KanziService.Animations.cs`，而非继续膨胀单个文件
 2. **SDK 优先，反射兜底**：新 API 访问先查 `KanziApiDump.txt`，优先在 `Sdk.cs` 添加强类型路径；仅无 SDK 或需 Wrapper 解包时在 `Reflection.cs` / `Mutate.Legacy.cs` 添加 fallback
 3. **遵循 preview/apply 模式**：所有写操作先返回计划 JSON，apply 时再执行
-4. **大批量操作考虑分批**：参考 `StateManager.cs` 的 `batchIndex` / `autoGenerateCount` 协议
+4. **大批量操作考虑分批**：参考 `StateManager.cs` 的 `batchIndex` / `autoGenerateCount` 协议；写操作可复用 Studio `BeginBatchModification` 模式（见 `BatchSession`）
 5. **UI 线程**：耗时操作在 Plugin 侧通过 `SynchronizationContext` 或 `Dispatcher` 调度
 
 ### 适配新 Kanzi 版本
