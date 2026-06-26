@@ -2,13 +2,14 @@
 
 通过 [Model Context Protocol (MCP)](https://modelcontextprotocol.io/) 让 AI 助手（Claude Code、Cursor 等）直接查询和操作 **Kanzi Studio** 项目：查节点、改属性、创建/删除节点、导入资源、审计绑定、创建状态机等。
 
-> **当前状态（2026-06）**：MCP 全链路已跑通。Server 与 Plugin 之间使用 **TCP `127.0.0.1:9595`** 通信（类名仍保留 `Pipe` 前缀，实际已是 TCP）。共 **20 个 MCP 工具**，插件业务层已拆分为 **partial class** 多文件结构，便于维护与扩展。
+> **当前状态（2026-06）**：MCP 全链路已跑通。Server 与 Plugin 之间使用 **TCP `127.0.0.1:9595`** 通信（类名仍保留 `Pipe` 前缀，实际已是 TCP）。共 **20 个 MCP 工具**，插件业务层采用 **SDK 优先（`Sdk.cs`）+ 反射兜底（`Reflection.cs` / `Mutate.Legacy.cs`）** 双轨架构，并按职责拆分为 partial class 多文件结构。
 
 ---
 
 ## 目录
 
 - [架构概览](#架构概览)
+- [2026-06 重构成果摘要](#2026-06-重构成果摘要)
 - [关键技术](#关键技术)
 - [代码框架](#代码框架)
 - [实现原理](#实现原理)
@@ -47,8 +48,10 @@
 ┌──────────────────────────────────────────────────────────────────┐
 │  PluginKanziMCP.dll（Kanzi Studio 进程内，.NET Framework 4.8）    │
 │  KanziMcpPlugin → KanziTcpServer → KanziService (partial)        │
+│    ├─ Sdk.cs（SDK 优先层）→ 强类型 PluginInterface API           │
+│    └─ Reflection.cs / Mutate.Legacy.cs（反射兜底）               │
 └────────────────────────────┬─────────────────────────────────────┘
-                             │  PluginInterface API（100% 反射）
+                             │  PluginInterface API（SDK 优先 + 反射兜底）
                              ▼
 ┌──────────────────────────────────────────────────────────────────┐
 │  Kanzi Studio / Kanzi Engine                                     │
@@ -61,10 +64,25 @@
 |----|------|
 | 双进程隔离 | MCP Server 是独立 exe，不依赖 Kanzi 进程；Kanzi 崩溃不影响 AI 客户端 |
 | TCP 而非 Named Pipe | 绕过跨进程安全上下文限制，固定端口 `9595` |
-| 纯反射访问 Kanzi | 除 `PluginInterface.dll` 外无 Kanzi SDK 编译依赖，便于适配多版本 |
+| SDK 优先 + 反射兜底 | 核心路径经 `Sdk.cs` 强类型调用；无公开 API 或 SDK 失败时降级到 `Reflection.cs` / `Mutate.Legacy.cs` |
 | preview / apply | 改属性、删节点、创建状态机等操作支持预览模式，避免 AI 误改项目 |
 | 分批执行 | 大批量状态机创建支持 `batchIndex` / `autoGenerateCount`，避免 UI 阻塞 |
 | stderr 日志 | 所有调试日志写 stderr，stdout 只输出 JSON，符合 MCP 规范 |
+
+**Plugin 业务层双轨架构：** `KanziService.Sdk.cs` 封装 `Project`、`ProjectItem`、`PropertyContainer`、`BindingHost`、`Commands` 等官方 API，作为节点查询、属性读写、绑定、资源导入等操作的**首选路径**；`KanziService.Reflection.cs` 提供 Wrapper 解包与 Legacy 遍历兜底；`KanziService.Mutate.Legacy.cs` 隔离无 SDK 公开 API 的黑盒反射（如 `GetInternalProjectItem`）。
+
+---
+
+## 2026-06 重构成果摘要
+
+本次重构建立了清晰的架构边界，将核心业务逻辑迁移至 SDK 优先路径，同时保留了必要的反射降级机制，显著提升了代码的可维护性和核心操作性能。
+
+| 维度 | 成果 |
+|------|------|
+| **架构建立** | 新增 `Sdk.cs`（SDK 优先层）和 `Mutate.Legacy.cs`（永久黑盒区），明确了代码职责 |
+| **代码精简** | 删除死代码、合并冗余逻辑，`Services` 目录净精简约 **843 行** |
+| **质量提升** | 编译警告从 **53 个**降至 **35 个**；`QueryNodes`、`SetProperty`、`ImportImage` 等热路径已优先使用 SDK |
+| **边界清晰** | `Reflection.cs`（通用反射工具）与 `Properties.cs`（复杂属性写入降级链）被明确定义为**永久兜底区**，防止未来误用 |
 
 ---
 
@@ -75,7 +93,7 @@
 | **MCP 协议** | JSON-RPC 2.0 over stdio | 协议版本 `2024-11-05`；支持 `initialize`、`tools/list`、`tools/call` |
 | **MCP Server** | .NET 10 (C# 12) | 自包含发布 `win-x64`，AI 客户端 fork 启动，无需预装运行时 |
 | **Kanzi 插件** | .NET Framework 4.8 (C# 7.3) | MEF `[Export]` 加载；WPF 侧边栏 `KanziMcpWindow` |
-| **Kanzi 集成** | 反射 + `PluginInterface.dll` | 多路 fallback 策略访问 `ActiveProject`、节点树、属性、绑定等 |
+| **Kanzi 集成** | SDK 优先 + 反射兜底 + `PluginInterface.dll` | `Sdk.cs` 强类型调用为主；`Reflection.cs` / `Mutate.Legacy.cs` 多路 fallback |
 | **进程间通信** | TCP localhost:9595 | 行分隔 JSON：`{method, args}` → `{result}` / `{error}` |
 | **序列化** | `System.Text.Json` | Server 与 Plugin 均使用 camelCase；Plugin 侧手动 bundled DLL |
 | **线程模型** | UI 线程调度 | Plugin 捕获 `SynchronizationContext`，Kanzi API 调用回到 Studio UI 线程 |
@@ -115,7 +133,9 @@ kanziMcpServer/
 │   │   └── KanziPipeServer.cs      # KanziTcpServer + 兼容别名 KanziPipeServer
 │   ├── Services/
 │   │   ├── KanziService.cs         # partial 主文件（Studio 注入、共享状态）
-│   │   ├── KanziService.Reflection.cs      # 反射辅助（GetActiveProject 等）
+│   │   ├── KanziService.Sdk.cs             # SDK 优先层（Project / PropertyContainer 等）
+│   │   ├── KanziService.Reflection.cs      # 反射兜底（Wrapper 解包、Legacy 遍历）
+│   │   ├── KanziService.Mutate.Legacy.cs   # 永久黑盒区（无 SDK 公开 API 的反射）
 │   │   ├── KanziService.Nodes.Query.cs     # 节点查询 / 搜索 / 树
 │   │   ├── KanziService.Nodes.Mutate.cs    # 节点创建 / 删除
 │   │   ├── KanziService.Properties.cs      # 属性读写 / 批量设置
@@ -148,7 +168,7 @@ kanziMcpServer/
 | 传输 | `KanziPipeClient.cs` | TCP 连接、重试、超时、`SendRequestAsync` |
 | 插件入口 | `KanziMcpPlugin.cs` | MEF `[Export]`，Initialize 时启动 TCP Server |
 | TCP 服务 | `KanziPipeServer.cs` | 监听 9595，路由 `method` 到 KanziService |
-| 业务 | `KanziService.*.cs` | 反射调用 Kanzi API，按领域拆分的 partial class |
+| 业务 | `KanziService.*.cs` | SDK 优先调用 Kanzi API，按领域拆分的 partial class；失败时反射兜底 |
 
 ### KanziService 模块划分
 
@@ -156,14 +176,16 @@ kanziMcpServer/
 
 | 文件 | 职责 | 对应 MCP 工具 / Pipe method |
 |------|------|-------------------------------|
+| `Sdk.cs` | **SDK 优先调用层**。封装 Kanzi 官方 API（`Project`、`ProjectItem`、`PropertyContainer`、`BindingHost`、`Commands` 等）的强类型调用，是业务逻辑的**首选路径** | 被 `Properties.cs`、`Nodes.Mutate.cs`、`Resources.cs`、`Nodes.Query.cs`、`Audit.cs` 等模块调用 |
+| `Mutate.Legacy.cs` | **永久黑盒隔离区**。集中存放无 SDK 公开 API、必须保留反射的方法（如 `GetInternalProjectItem`、`TryExecuteKanziPluginCommand`、`FindNodeType`），**禁止 SDK 化** | 被 `Nodes.Mutate.cs`、`Resources.cs`、`Sdk.cs` 等模块调用 |
 | `Nodes.Query.cs` | 节点查询、树、搜索 | `query_nodes`, `get_node_tree`, `search_nodes`, `list_node_types` |
 | `Nodes.Mutate.cs` | 节点 CRUD | `create_node`, `delete_node` |
-| `Properties.cs` | 属性读写 | `set_property`, `batch_set_property`, `get_property_metadata` |
+| `Properties.cs` | 属性读写（SDK 优先 + 复杂属性反射降级链） | `set_property`, `batch_set_property`, `get_property_metadata` |
 | `CustomProperties.cs` | CustomEnum 属性 | `upsert_custom_enum_property` |
 | `StateManager.cs` | 状态机创建 | `create_state_manager` |
 | `Audit.cs` | 项目审计 | `audit_*` 系列 |
 | `Resources.cs` | 资源导入/诊断 | `import_image`, `import_fbx`, `doctor_resource` |
-| `Reflection.cs` | 通用反射工具 | 被各模块内部调用 |
+| `Reflection.cs` | **反射兜底区**。Wrapper 解包、`SafeConvertValue`、`*LegacyReflection` 路径遍历等通用反射工具 | 被 `Sdk.cs` 及各业务模块在 SDK 失败时调用 |
 | `Helpers.cs` | JSON 序列化、日志 | 被各模块内部调用 |
 
 ---
@@ -201,7 +223,7 @@ AI 客户端连接后会按 MCP 规范依次发送：
 
 4. KanziTcpServer 收到请求
    → KanziService.QueryNodes(args)
-   → 在 Kanzi 项目里反射查节点
+   → 经 Sdk.cs 强类型访问项目/节点（失败时 Reflection.cs 兜底）
 
 5. 返回 {"result":"{...节点 JSON...}"}
    → Server 包装为 MCP 格式:
@@ -230,14 +252,27 @@ AI 客户端连接后会按 MCP 规范依次发送：
 
 ### 5. 反射策略（KanziService 核心）
 
-Kanzi Studio 未公开完整 SDK，所有业务通过反射实现，并采用多路 fallback：
+**当前策略（双轨架构）：** 所有 Kanzi API 调用**优先**通过 `KanziService.Sdk.cs` 中的强类型 SDK 方法执行（如 `_studio.ActiveProject`、`Project.GetProjectItem`、`PropertyContainer.Set/Get`、`BindingHost.Bindings`、`Commands.ImportImages` 等）。仅在 SDK 路径不可用（如无公开 API、处理动态属性/跨程序集类型、非标准容器等）或明确失败时，才降级到 `Reflection.cs` 及 `Mutate.Legacy.cs` 中的反射逻辑作为兜底。这提升了核心路径的性能和可维护性。
+
+**SDK 优先路径（热路径示例）：**
+
+| 操作 | SDK 路径（`Sdk.cs`） | 反射兜底 |
+|------|----------------------|----------|
+| 获取当前项目 / 按路径找节点 | `ActiveProject` → `GetProjectItem(path)` | `*LegacyReflection` 多路查找 + 路径遍历 |
+| 遍历子节点 | `ProjectItem.Children` | `GetChildrenLegacyReflection`（非标准容器强制反射） |
+| 读取 / 写入属性 | `PropertyContainer.Get/Set` | `Properties.cs` 多策略链（Text/LocalizedString 永久走反射） |
+| 读取绑定 / 修改 binding code | `BindingHost.Bindings` / `Binding.Code` | `GetBindingsInfoLegacyReflection` |
+| 导入图片 / FBX | `Commands.ImportImages` / `CreateProjectItem<Asset3DSourceFile>` | `Resources.cs` legacy 链 + `Mutate.Legacy.cs` 黑盒 |
+
+**反射兜底细节（`Reflection.cs` / `Mutate.Legacy.cs`）：**
 
 | 操作 | 策略 |
 |------|------|
-| 获取当前项目 | 5 路查找：`FlattenHierarchy` → 继承链 → 接口 → `Project` 属性 → 扫描 |
-| 按路径找节点 | 路径拆分 + `Children` 遍历（无 `GetProjectItem(string)` 直接 API） |
-| 读取属性值 | `DynamicProperty.Value` → 直接属性 → Indexer，共 5 策略 |
-| 创建节点 | 4 种创建方式 fallback |
+| 获取当前项目（Legacy） | 5 路查找：`FlattenHierarchy` → 继承链 → 接口 → `Project` 属性 → 扫描 |
+| 按路径找节点（Legacy） | 路径拆分 + `Children` 遍历 |
+| 读取属性值（Wrapper 解包） | `DynamicProperty.Value` → 直接属性 → Indexer，共 5 策略 |
+| 创建节点（Legacy） | SDK `CreateProjectItem<T>` 失败后，8 策略反射 fallback |
+| PluginWrapper 解包 | `GetInternalProjectItem`（`Mutate.Legacy.cs`，永久黑盒） |
 | 序列化 | `SafeSerialize` 处理 DBNull、循环引用、不可序列化类型 |
 
 启动时 `KanziApiDumper` 会将 Studio 真实 API 面导出到 `C:\temp\KanziApiDump.txt`，便于调试新版本 Kanzi。
@@ -586,7 +621,7 @@ KanziService.*.cs       ← 业务实现（放入对应 partial 文件）
 ### 扩展 KanziService 的建议
 
 1. **优先新增 partial 文件**：如 `KanziService.Animations.cs`，而非继续膨胀单个文件
-2. **复用 Reflection / Helpers**：新 API 访问先查 `KanziApiDump.txt`，在 `Reflection.cs` 添加通用 helper
+2. **SDK 优先，反射兜底**：新 API 访问先查 `KanziApiDump.txt`，优先在 `Sdk.cs` 添加强类型路径；仅无 SDK 或需 Wrapper 解包时在 `Reflection.cs` / `Mutate.Legacy.cs` 添加 fallback
 3. **遵循 preview/apply 模式**：所有写操作先返回计划 JSON，apply 时再执行
 4. **大批量操作考虑分批**：参考 `StateManager.cs` 的 `batchIndex` / `autoGenerateCount` 协议
 5. **UI 线程**：耗时操作在 Plugin 侧通过 `SynchronizationContext` 或 `Dispatcher` 调度
@@ -596,7 +631,7 @@ KanziService.*.cs       ← 业务实现（放入对应 partial 文件）
 1. 将对应版本的 `PluginInterface.dll` 放入 `pluginInterface/kanziX.Y.Z/`
 2. 运行 `publish.bat X.Y.Z` 编译
 3. 启动 Studio 后检查 `KanziApiDump.txt`，对比 API 变化
-4. 按需在 `Reflection.cs` 或具体业务文件中增加 fallback 分支
+4. 按需在 `Sdk.cs` 增加 SDK 路径，或在 `Reflection.cs` / `Mutate.Legacy.cs` 增加 fallback 分支
 
 ### 后续可扩展方向
 
