@@ -88,9 +88,6 @@ namespace KanziMcpPlugin.Services
         private static BindingHost? AsBindingHost(object? item)
             => item as BindingHost;
 
-        private static ProjectItem? AsProjectItem(object? item)
-            => item as ProjectItem;
-
         #region 非标准容器检测
 
         /// <summary>
@@ -204,34 +201,9 @@ namespace KanziMcpPlugin.Services
             return GetItemTypeLegacyReflection(item);
         }
 
-        private PropertyTypeLibrary? GetSdkPropertyTypeLibrary()
-        {
-            var project = GetSdkProject();
-            return project?.PropertyTypeLibrary;
-        }
-
         #endregion
 
         #region SDK 属性读写
-
-        private bool TryGetPropertyValueViaSdk(object item, string propertyName, out object? value)
-        {
-            value = null;
-            var container = AsPropertyContainer(item);
-            if (container == null)
-                return false;
-
-            try
-            {
-                value = container.Get(propertyName);
-                return true;
-            }
-            catch (Exception ex)
-            {
-                Log($"TryGetPropertyValueViaSdk('{propertyName}') failed: {ex.Message}");
-                return false;
-            }
-        }
 
         /// <summary>
         /// SDK 属性写入统一入口 — PropertyContainer.Set 优先。
@@ -544,180 +516,8 @@ namespace KanziMcpPlugin.Services
             }
         }
 
-        private bool TryImportSingleImageViaSdk(Project project, string filePath, out Exception? error)
-        {
-            error = null;
-            if (_studio == null)
-            {
-                error = new InvalidOperationException("Kanzi Studio not connected");
-                return false;
-            }
-
-            try
-            {
-                _studio.Commands.ImportImages(project, filePath, false);
-                return true;
-            }
-            catch (Exception ex)
-            {
-                error = ex;
-                Log($"TryImportSingleImageViaSdk failed: {ex.Message}");
-                return false;
-            }
-        }
-
-        private bool TryImportAsset3DViaSdk(Asset3DSourceFile sourceFile, string filePath, out Exception? error)
-        {
-            error = null;
-            if (_studio == null)
-            {
-                error = new InvalidOperationException("Kanzi Studio not connected");
-                return false;
-            }
-
-            try
-            {
-                _studio.Commands.ImportAsset3DSourceFile(sourceFile, filePath);
-                return true;
-            }
-            catch (Exception ex)
-            {
-                error = ex;
-                Log($"TryImportAsset3DViaSdk failed: {ex.Message}");
-                return false;
-            }
-        }
-
         #endregion
 
-        #region SDK 资源诊断
-
-        private bool IsResourceReferencedViaSdk(Project project, ProjectItem resourceItem)
-        {
-            try
-            {
-                var kzbUrl = resourceItem.KzbUrl;
-                if (string.IsNullOrEmpty(kzbUrl))
-                    return false;
-
-                var referrers = project.GetReferringItemsKzbNames(kzbUrl);
-                return referrers != null && referrers.Any();
-            }
-            catch (Exception ex)
-            {
-                Log($"IsResourceReferencedViaSdk failed for '{GetItemName(resourceItem)}': {ex.Message}");
-                return false;
-            }
-        }
-
-        /// <summary>SDK 树遍历 — 从 Project 根收集属性中的资源引用。</summary>
-        private void CollectUsedResourcesFromSdkTree(ProjectItem item, HashSet<string> usedPaths,
-            ref int scannedNodeCount, ref int detectedRefCount, List<string> sampleReferences, int depth)
-        {
-            if (depth > 30)
-                return;
-
-            try
-            {
-                scannedNodeCount++;
-
-                if (item is PropertyContainer container)
-                {
-                    foreach (var prop in container.Properties)
-                    {
-                        if (prop == null || string.IsNullOrEmpty(prop.Name))
-                            continue;
-
-                        try
-                        {
-                            TryCollectResourceReferenceFromValue(container.Get(prop.Name), usedPaths,
-                                ref detectedRefCount, sampleReferences, prop.Name);
-                        }
-                        catch { }
-                    }
-                }
-
-                TryExtractDirectRefs(item, usedPaths, ref detectedRefCount, sampleReferences);
-
-                foreach (var child in item.Children ?? Enumerable.Empty<ProjectItem>())
-                    CollectUsedResourcesFromSdkTree(child, usedPaths, ref scannedNodeCount, ref detectedRefCount,
-                        sampleReferences, depth + 1);
-            }
-            catch (Exception ex)
-            {
-                Log($"CollectUsedResourcesFromSdkTree failed on '{item.Name}': {ex.Message}");
-            }
-        }
-
-        /// <summary>用 GetReferringItemsKzbNames 反向标记被引用的资源路径。</summary>
-        private int EnrichUsedPathsFromSdkReferrers(Project project, IEnumerable<string> folderNames,
-            HashSet<string> usedPaths, List<string> sampleReferences)
-        {
-            var added = 0;
-            foreach (var folderName in folderNames)
-            {
-                ProjectItem? folder = null;
-                try
-                {
-                    folder = project.GetProjectItem(folderName);
-                }
-                catch { }
-
-                if (folder == null)
-                    continue;
-
-                added += EnrichUsedPathsFromSdkReferrersRecursive(project, folder, usedPaths, sampleReferences);
-            }
-
-            return added;
-        }
-
-        private int EnrichUsedPathsFromSdkReferrersRecursive(Project project, ProjectItem folder,
-            HashSet<string> usedPaths, List<string> sampleReferences)
-        {
-            var added = 0;
-            foreach (var child in folder.Children ?? Enumerable.Empty<ProjectItem>())
-            {
-                var childType = !string.IsNullOrEmpty(child.TypeDisplayName)
-                    ? child.TypeDisplayName
-                    : child.GetType().Name;
-
-                if (IsResourceFolder(child, childType))
-                {
-                    added += EnrichUsedPathsFromSdkReferrersRecursive(project, child, usedPaths, sampleReferences);
-                    continue;
-                }
-
-                if (string.IsNullOrEmpty(child.KzbUrl))
-                    continue;
-
-                try
-                {
-                    var referrers = project.GetReferringItemsKzbNames(child.KzbUrl);
-                    if (referrers == null || !referrers.Any())
-                        continue;
-
-                    var normalizedPath = NormalizeResourcePath(child.Path ?? child.Name);
-                    if (!string.IsNullOrEmpty(normalizedPath) && usedPaths.Add(normalizedPath))
-                    {
-                        added++;
-                        if (sampleReferences.Count < 10)
-                            sampleReferences.Add($"SDK.GetReferringItemsKzbNames → {normalizedPath}");
-                    }
-
-                    if (!string.IsNullOrEmpty(child.Name) && usedPaths.Add(child.Name))
-                        added++;
-                }
-                catch (Exception ex)
-                {
-                    Log($"EnrichUsedPathsFromSdkReferrers failed for '{child.Name}': {ex.Message}");
-                }
-            }
-
-            return added;
-        }
-
-        #endregion
 
         #region SDK 资源定位 / FBX
 
@@ -892,16 +692,6 @@ namespace KanziMcpPlugin.Services
             detectedRefCount++;
             if (sampleReferences.Count < 10)
                 sampleReferences.Add($"{label} → {normalized}");
-        }
-
-        private object? FindImportedTextureAfterSdkImport(Project project, string resourceName)
-            => FindImportedImageAfterSdkImport(project, resourceName);
-
-        private string EffectiveImportResourceName(string filePath, string? resourceName, bool singleFileBatch)
-        {
-            if (singleFileBatch && !string.IsNullOrEmpty(resourceName))
-                return resourceName;
-            return Path.GetFileNameWithoutExtension(filePath);
         }
 
         private bool TryImportFbxViaSdk(Project project, string filePath, string? resourceName,

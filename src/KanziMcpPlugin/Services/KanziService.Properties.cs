@@ -1222,7 +1222,6 @@ namespace KanziMcpPlugin.Services
 
                 Log($"BatchSetProperty: found {matchingNodes.Count} matching nodes");
 
-                Log($"BatchSetProperty: found {matchingNodes.Count} matching nodes");
 
                 if (mode == "preview" || mode == "dry-run")
                 {

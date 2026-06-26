@@ -629,18 +629,6 @@ namespace KanziMcpPlugin.Services
             }
         }
 
-        /// <summary>
-        /// [DEPRECATED] Legacy reflection-based batch state creation.
-        /// Use <see cref="CreateStatesInBatchTyped"/> instead.
-        /// </summary>
-        [Obsolete("Use CreateStatesInBatchTyped instead.")]
-        private (bool success, string? error) CreateStatesInBatch(object project, object stateGroupObj,
-            List<StateDefinition> batchStates, string groupProperty, string strategy,
-            ref object? templateState)
-        {
-            throw new NotSupportedException(
-                "CreateStatesInBatch is deprecated. Use CreateStatesInBatchTyped instead.");
-        }
 
         /// <summary>
         /// Infer property value type (reference: addProjectItemProperty type inference)
